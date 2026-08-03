@@ -244,6 +244,16 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "number",
         ["number", "number", "number"]
     );
+    var sqlite3_progress_handler = cwrap(
+        "sqlite3_progress_handler",
+        "",
+        ["number", "number", "number", "number"]
+    );
+    var sqlite3_interrupt = cwrap(
+        "sqlite3_interrupt",
+        "",
+        ["number"]
+    );
 
     /**
     * @classdesc
@@ -1094,6 +1104,11 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         });
         Object.values(this.functions).forEach(removeFunction);
         this.functions = {};
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
         this.handleError(sqlite3_close_v2(this.db));
         var binaryDb = FS.readFile(this.filename, { encoding: "binary" });
         this.handleError(sqlite3_open(this.filename, apiTemp));
@@ -1122,6 +1137,12 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         });
         Object.values(this.functions).forEach(removeFunction);
         this.functions = {};
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
 
         if (this.updateHookFunctionPtr) {
             removeFunction(this.updateHookFunctionPtr);
@@ -1155,6 +1176,71 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     */
     Database.prototype.getRowsModified = function getRowsModified() {
         return sqlite3_changes(this.db);
+    };
+
+    /** Register a callback that SQLite calls periodically while executing
+     * statements. Returning a truthy value from the callback interrupts the
+     * current statement. Passing a null or omitted callback clears the handler.
+     * A callback that throws also interrupts the statement.
+     *
+     * @param {number} nOps approximate number of virtual machine instructions
+     * between callbacks
+     * @param {function|null} [callback] callback to register, or null to
+     * clear the current callback
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.progress_handler = function progress_handler(
+        nOps,
+        callback
+    ) {
+        if (!this.db) {
+            throw "Database closed";
+        }
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
+
+        if (callback === null || typeof callback === "undefined") {
+            return this;
+        }
+
+        function wrappedProgressHandler() {
+            // An exception must not unwind through SQLite's C frames; treat a
+            // throwing callback as a request to interrupt the statement.
+            try {
+                return callback() ? 1 : 0;
+            } catch (error) {
+                return 1;
+            }
+        }
+
+        // int wrappedProgressHandler(void *userData)
+        this.progressHandlerFunctionPtr = addFunction(
+            wrappedProgressHandler,
+            "ii"
+        );
+        sqlite3_progress_handler(
+            this.db,
+            nOps,
+            this.progressHandlerFunctionPtr,
+            0
+        );
+        return this;
+    };
+
+    /** Interrupt a currently executing statement on this database.
+     *
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.interrupt = function interrupt() {
+        if (!this.db) {
+            throw "Database closed";
+        }
+        sqlite3_interrupt(this.db);
+        return this;
     };
 
     var extract_blob = function extract_blob(ptr) {
@@ -1565,6 +1651,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     Database.prototype["close"] = Database.prototype.close;
     Database.prototype["handleError"] = Database.prototype.handleError;
     Database.prototype["getRowsModified"] = Database.prototype.getRowsModified;
+    Database.prototype["progress_handler"]
+        = Database.prototype.progress_handler;
+    Database.prototype["interrupt"] = Database.prototype.interrupt;
     Database.prototype["create_function"] = Database.prototype.create_function;
     Database.prototype["create_aggregate"]
         = Database.prototype.create_aggregate;
