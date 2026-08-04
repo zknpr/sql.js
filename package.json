@@ -29,6 +29,7 @@
 		"build": "make",
 		"rebuild": "npm run clean && npm run build",
 		"clean": "make clean",
+		"bench": "node bench/benchmark.js",
 		"test": "npm run lint && npm run test-asm && npm run test-asm-debug && npm run test-wasm && npm run test-wasm-debug && npm run test-wasm-browser && npm run test-asm-memory-growth",
 		"lint": "eslint .",
 		"prettify": "eslint . --fix",

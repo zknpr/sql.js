@@ -1,6 +1,7 @@
 /* global
     FS
     HEAP8
+    HEAPU8
     Module
     _malloc
     _free
@@ -244,6 +245,16 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "number",
         ["number", "number", "number"]
     );
+    var sqlite3_progress_handler = cwrap(
+        "sqlite3_progress_handler",
+        "",
+        ["number", "number", "number", "number"]
+    );
+    var sqlite3_interrupt = cwrap(
+        "sqlite3_interrupt",
+        "",
+        ["number"]
+    );
 
     /**
     * @classdesc
@@ -281,6 +292,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // Pointers to allocated memory, that need to be freed
         // when the statemend is destroyed
         this.allocatedmem = [];
+        // Column names are stable while stepping one execution. Avoid crossing
+        // the WASM boundary for every row materialized as an object.
+        this.columnNames = null;
+        this.activeResult = false;
     }
 
     /** @typedef {string|number|null|Uint8Array} Database.SqlValue */
@@ -349,14 +364,20 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         if (!this.stmt) {
             throw "Statement closed";
         }
+        if (!this.activeResult) {
+            this.columnNames = null;
+        }
         this.pos = 1;
         var ret = sqlite3_step(this.stmt);
         switch (ret) {
             case SQLITE_ROW:
+                this.activeResult = true;
                 return true;
             case SQLITE_DONE:
+                this.activeResult = false;
                 return false;
             default:
+                this.activeResult = false;
                 throw this.db.handleError(ret);
         }
     };
@@ -401,11 +422,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         }
         var size = sqlite3_column_bytes(this.stmt, pos);
         var ptr = sqlite3_column_blob(this.stmt, pos);
-        var result = new Uint8Array(size);
-        for (var i = 0; i < size; i += 1) {
-            result[i] = HEAP8[ptr + i];
-        }
-        return result;
+        // slice() copies. A subarray would alias WASM memory and become stale
+        // or detached when ALLOW_MEMORY_GROWTH replaces the heap views.
+        return HEAPU8.slice(ptr, ptr + size);
     };
 
     /** Get one row of results of a statement.
@@ -424,31 +443,31 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     while (stmt.step()) console.log(stmt.get(null, {useBigInt: true}));
      */
     Statement.prototype.get = function get(params, config) {
-        config = config || {};
+        var useBigInt = config && config["useBigInt"];
         if (params != null && this.bind(params)) {
             this.step();
         }
-        var results1 = [];
         var ref = sqlite3_data_count(this.stmt);
+        var results1 = new Array(ref);
         for (var field = 0; field < ref; field += 1) {
             switch (sqlite3_column_type(this.stmt, field)) {
                 case SQLITE_INTEGER:
-                    var getfunc = config["useBigInt"]
+                    var getfunc = useBigInt
                         ? this.getBigInt(field)
                         : this.getNumber(field);
-                    results1.push(getfunc);
+                    results1[field] = getfunc;
                     break;
                 case SQLITE_FLOAT:
-                    results1.push(this.getNumber(field));
+                    results1[field] = this.getNumber(field);
                     break;
                 case SQLITE_TEXT:
-                    results1.push(this.getString(field));
+                    results1[field] = this.getString(field);
                     break;
                 case SQLITE_BLOB:
-                    results1.push(this.getBlob(field));
+                    results1[field] = this.getBlob(field);
                     break;
                 default:
-                    results1.push(null);
+                    results1[field] = null;
             }
         }
         return results1;
@@ -464,13 +483,22 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     console.log(stmt.getColumnNames());
     // Will print ['nbr','data','null_value']
      */
-    Statement.prototype.getColumnNames = function getColumnNames() {
-        var results1 = [];
-        var ref = sqlite3_column_count(this.stmt);
-        for (var i = 0; i < ref; i += 1) {
-            results1.push(sqlite3_column_name(this.stmt, i));
+    function getColumnNamesInternal(statement) {
+        if (statement.columnNames === null) {
+            statement.columnNames = [];
+            var ref = sqlite3_column_count(statement.stmt);
+            for (var i = 0; i < ref; i += 1) {
+                statement.columnNames.push(
+                    sqlite3_column_name(statement.stmt, i)
+                );
+            }
         }
-        return results1;
+        return statement.columnNames;
+    }
+
+    Statement.prototype.getColumnNames = function getColumnNames() {
+        // Preserve the public contract: callers receive an independent array.
+        return getColumnNamesInternal(this).slice();
     };
 
     /** Get one row of result as a javascript object, associating column names
@@ -491,7 +519,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
      */
     Statement.prototype.getAsObject = function getAsObject(params, config) {
         var values = this.get(params, config);
-        var names = this.getColumnNames();
+        var names = getColumnNamesInternal(this);
         var rowObject = {};
         for (var i = 0; i < names.length; i += 1) {
             var name = names[i];
@@ -660,6 +688,8 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     by bound parameters.
      */
     Statement.prototype.reset = function reset() {
+        this.columnNames = null;
+        this.activeResult = false;
         this.freemem();
         return (
             sqlite3_clear_bindings(this.stmt) === SQLITE_OK
@@ -1094,6 +1124,11 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         });
         Object.values(this.functions).forEach(removeFunction);
         this.functions = {};
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
         this.handleError(sqlite3_close_v2(this.db));
         var binaryDb = FS.readFile(this.filename, { encoding: "binary" });
         this.handleError(sqlite3_open(this.filename, apiTemp));
@@ -1122,6 +1157,12 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         });
         Object.values(this.functions).forEach(removeFunction);
         this.functions = {};
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
 
         if (this.updateHookFunctionPtr) {
             removeFunction(this.updateHookFunctionPtr);
@@ -1155,6 +1196,71 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     */
     Database.prototype.getRowsModified = function getRowsModified() {
         return sqlite3_changes(this.db);
+    };
+
+    /** Register a callback that SQLite calls periodically while executing
+     * statements. Returning a truthy value from the callback interrupts the
+     * current statement. Passing a null or omitted callback clears the handler.
+     * A callback that throws also interrupts the statement.
+     *
+     * @param {number} nOps approximate number of virtual machine instructions
+     * between callbacks
+     * @param {function|null} [callback] callback to register, or null to
+     * clear the current callback
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.progress_handler = function progress_handler(
+        nOps,
+        callback
+    ) {
+        if (!this.db) {
+            throw "Database closed";
+        }
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
+
+        if (callback === null || typeof callback === "undefined") {
+            return this;
+        }
+
+        function wrappedProgressHandler() {
+            // An exception must not unwind through SQLite's C frames; treat a
+            // throwing callback as a request to interrupt the statement.
+            try {
+                return callback() ? 1 : 0;
+            } catch (error) {
+                return 1;
+            }
+        }
+
+        // int wrappedProgressHandler(void *userData)
+        this.progressHandlerFunctionPtr = addFunction(
+            wrappedProgressHandler,
+            "ii"
+        );
+        sqlite3_progress_handler(
+            this.db,
+            nOps,
+            this.progressHandlerFunctionPtr,
+            0
+        );
+        return this;
+    };
+
+    /** Interrupt a currently executing statement on this database.
+     *
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.interrupt = function interrupt() {
+        if (!this.db) {
+            throw "Database closed";
+        }
+        sqlite3_interrupt(this.db);
+        return this;
     };
 
     var extract_blob = function extract_blob(ptr) {
@@ -1565,6 +1671,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     Database.prototype["close"] = Database.prototype.close;
     Database.prototype["handleError"] = Database.prototype.handleError;
     Database.prototype["getRowsModified"] = Database.prototype.getRowsModified;
+    Database.prototype["progress_handler"]
+        = Database.prototype.progress_handler;
+    Database.prototype["interrupt"] = Database.prototype.interrupt;
     Database.prototype["create_function"] = Database.prototype.create_function;
     Database.prototype["create_aggregate"]
         = Database.prototype.create_aggregate;

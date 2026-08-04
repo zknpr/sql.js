@@ -21,12 +21,23 @@ exports.test = function(SQL, assert){
 	stmt.step();
 	var res = stmt.get();
 	assert.deepEqual(res, [new Uint8Array([0x61, 0x62, 0xff])], "Reading BLOB");
+	var retainedBlob = res[0];
+	retainedBlob[0] = 0xff;
 
 	stmt.step();
 	var res = stmt.get();
 	assert.deepEqual(res, [new Uint8Array([0x00])], "Reading BLOB with a null byte");
 
 	assert.strictEqual(stmt.step(), false, "stmt.step() should return false after all values were read");
+	var ownershipStmt = db.prepare("SELECT data FROM test WHERE length(data) = 3");
+	ownershipStmt.step();
+	assert.deepEqual(ownershipStmt.get()[0],
+		new Uint8Array([0x61, 0x62, 0xff]),
+		"Mutating a returned BLOB does not mutate SQLite memory");
+	assert.deepEqual(retainedBlob,
+		new Uint8Array([0xff, 0x62, 0xff]),
+		"Returned BLOBs remain caller-owned after statement reuse");
+	ownershipStmt.free();
 	db.close();
 };
 

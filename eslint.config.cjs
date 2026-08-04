@@ -7,6 +7,7 @@ module.exports = [
     {
         ignores: [
             ".eslintrc.js",
+            "bench/results/**",
             "dist/**",
             "examples/**",
             "documentation/**",
