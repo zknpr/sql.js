@@ -17,20 +17,34 @@ EXTENSION_FUNCTIONS_SHA1 = c68fa706d6d9ff98608044c00212473f9c14892f
 
 EMCC=emcc
 
+# Keep the compile and link optimization level in sync. LTO stages are separate
+# to preserve and measure the old link-only policy. Make does not track
+# command-line variable changes, so clean before comparing variants.
+OPTIMIZATION ?= -Oz
+COMPILE_LTO_FLAGS ?=
+LINK_LTO_FLAGS ?= -flto
+CLOSURE ?= 1
+SQLITE_PERFORMANCE_FLAGS ?= -DSQLITE_LIKE_DOESNT_MATCH_BLOBS
+SQLITE_EXTRA_FLAGS ?=
+
 SQLITE_COMPILATION_FLAGS = \
-	-Oz \
+	$(OPTIMIZATION) \
+	$(COMPILE_LTO_FLAGS) \
 	-DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_DISABLE_LFS \
 	-DSQLITE_ENABLE_FTS3 \
 	-DSQLITE_ENABLE_FTS3_PARENTHESIS \
+	-DSQLITE_ENABLE_FTS5 \
 	-DSQLITE_THREADSAFE=0 \
-	-DSQLITE_ENABLE_NORMALIZE
+	-DSQLITE_ENABLE_NORMALIZE \
+	$(SQLITE_PERFORMANCE_FLAGS) \
+	$(SQLITE_EXTRA_FLAGS)
 
-# When compiling to WASM, enabling memory-growth is not expected to make much of an impact, so we enable it for all builds
-# Since tihs is a library and not a standalone executable, we don't want to catch unhandled Node process exceptions
+# SQLite Explorer accepts files up to 200MB, so WASM must grow beyond its
+# initial heap instead of reserving a desktop-sized heap in every browser.
+# Since this is a library and not a standalone executable, we don't want to catch unhandled Node process exceptions
 # So, we do : `NODEJS_CATCH_EXIT=0`, which fixes issue: https://github.com/sql-js/sql.js/issues/173 and https://github.com/sql-js/sql.js/issues/262
 EMFLAGS = \
-	-s RESERVED_FUNCTION_POINTERS=64 \
 	-s ALLOW_TABLE_GROWTH=1 \
 	-s EXPORTED_FUNCTIONS=@src/exported_functions.json \
 	-s EXPORTED_RUNTIME_METHODS=@src/exported_runtime_methods.json \
@@ -47,18 +61,16 @@ EMFLAGS_ASM_MEMORY_GROWTH = \
 	-s ALLOW_MEMORY_GROWTH=1
 
 EMFLAGS_WASM = \
-	-s WASM=1 \
 	-s ALLOW_MEMORY_GROWTH=1
 
 EMFLAGS_WASM_BROWSER = \
-	-s WASM=1 \
 	-s ALLOW_MEMORY_GROWTH=1 \
 	-s ENVIRONMENT=web,worker
 
 EMFLAGS_OPTIMIZED= \
-	-Oz \
-	-flto \
-	--closure 1
+	$(OPTIMIZATION) \
+	$(LINK_LTO_FLAGS) \
+	--closure $(CLOSURE)
 
 EMFLAGS_DEBUG = \
 	-s ASSERTIONS=2 \

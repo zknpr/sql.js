@@ -10,3 +10,4 @@ tmp/
 c/
 emsdk/
 sqljs.zip
+bench/results/

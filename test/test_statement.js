@@ -35,6 +35,24 @@ exports.test = function(sql, assert){
     assert.strictEqual(res.str, '粵語😄', "Read string");
     assert.strictEqual(res.no_value, null, "Read null");
     assert.deepEqual(res, {nbr:5, str:'粵語😄', no_value:null}, "Statement.getAsObject()");
+
+    var callerOwnedNames = stmt.getColumnNames();
+    callerOwnedNames[0] = 'mutated';
+    assert.deepEqual(stmt.getColumnNames(), ['nbr','str','no_value'],
+        'Statement.getColumnNames() returns caller-owned arrays');
+    stmt.free();
+
+    db.run("CREATE TABLE shape_test (initial);"
+        + " INSERT INTO shape_test VALUES ('value')");
+    stmt = db.prepare("SELECT * FROM shape_test");
+    stmt.step();
+    assert.deepEqual(stmt.getAsObject(), {initial:'value'},
+        "Statement.getAsObject() reads the initial result shape");
+    stmt.reset();
+    db.run("ALTER TABLE shape_test ADD COLUMN added TEXT DEFAULT 'new'");
+    stmt.step();
+    assert.deepEqual(stmt.getAsObject(), {initial:'value', added:'new'},
+        "Statement.reset() invalidates result column metadata");
     stmt.free();
 
     // getColumnNames() should work even if query returns no data 
@@ -96,4 +114,3 @@ if (module == require.main) {
     assert.fail(e);
   });
 }
-
