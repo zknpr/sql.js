@@ -1,8 +1,8 @@
 /*
-** sqljs_host: a read-only, page-on-demand VFS for sql.js.
+** sqljs_host: a page-on-demand VFS for sql.js.
 **
 ** Purpose: let SQLite query a database that stays on the host (JavaScript)
-** side instead of being copied into the WASM heap. The host registers two
+** side instead of being copied into the WASM heap. The host registers
 ** callbacks and SQLite pulls only the pages it needs through them:
 **
 **   int    xJsRead(int fileId, void *pDst, int iAmt, sqlite3_int64 iOfst)
@@ -18,15 +18,42 @@
 **            browser host can serve.
 **
 ** Databases are opened by numeric fileId through sqljs_open_paged(), which
-** encodes the id into a synthetic path ("sqljs-paged-<id>"). The VFS is
-** strictly read-only and single-connection:
+** encodes the id into a synthetic path ("sqljs-paged-<id>"). Files opened
+** that way are strictly read-only: every write path fails with
+** SQLITE_READONLY.
+**
+** Copy-on-write mode: after sqljs_vfs_register_rw() installs two more
+** callbacks, sqljs_open_paged_rw() opens the same kind of host file
+** read-write:
+**
+**   int    xJsWrite(int fileId, const void *pSrc, int iAmt,
+**                   sqlite3_int64 iOfst)
+**            Record iAmt bytes at offset iOfst. Returns 0 on success,
+**            non-zero on failure. The JS side stores written ranges in a
+**            host-memory overlay (and serves them back through xJsRead,
+**            merged over the unchanged base file); the underlying host
+**            file is NEVER modified by this VFS.
+**
+**   int    xJsTruncate(int fileId, sqlite3_int64 size)
+**            Set the logical file size (shrink on VACUUM/rollback, in
+**            principle also extend). 0 on success, non-zero on failure.
+**
+** sqljs_open_paged_rw() forces PRAGMA journal_mode=MEMORY on the new
+** connection before handing it out: the rollback journal must live in
+** memory because a MAIN_JOURNAL open is refused below (xAccess reports
+** the journal absent, so with a memory journal the pager never asks).
+** Sync is a no-op in this mode -- the overlay write in xJsWrite is
+** already synchronous and there is no durable medium behind it.
+**
+** Both modes are single-connection:
 **   - only main-database opens bind to a host fileId;
 **   - scratch storage (temp/transient DBs and their journals) is delegated
 **     wholesale to the default (in-memory) VFS so sorts and temp tables
 **     still work;
 **   - journal/WAL/super-journal opens are refused: xAccess reports them
-**     absent and every write path fails with SQLITE_READONLY before
-**     reaching them, so any such open would be a logic error;
+**     absent, read-only files fail every write path with SQLITE_READONLY,
+**     and read-write files keep their rollback journal in memory, so any
+**     such open would be a logic error;
 **   - locking is a no-op: nothing else can see the host snapshot.
 */
 #include <string.h>
@@ -43,11 +70,18 @@ SQLITE_OMIT_LOAD_EXTENSION"
 typedef int (*sqljs_read_fn)(int fileId, void *pDst, int iAmt,
                              sqlite3_int64 iOfst);
 typedef double (*sqljs_size_fn)(int fileId);
+typedef int (*sqljs_write_fn)(int fileId, const void *pSrc, int iAmt,
+                              sqlite3_int64 iOfst);
+typedef int (*sqljs_truncate_fn)(int fileId, sqlite3_int64 size);
 
 /* Host callbacks, shared by every paged file. The JS side dispatches on
-** fileId, so one callback pair serves any number of open databases. */
+** fileId, so one callback set serves any number of open databases. The
+** write/truncate pair stays NULL until sqljs_vfs_register_rw(); while it
+** is NULL, read-write opens are refused. */
 static sqljs_read_fn g_xJsRead = 0;
 static sqljs_size_fn g_xJsSize = 0;
+static sqljs_write_fn g_xJsWrite = 0;
+static sqljs_truncate_fn g_xJsTruncate = 0;
 
 /* The VFS that was the default when sqljs_host registered. Used for
 ** scratch-file delegation and for randomness/time, which the host
@@ -183,6 +217,65 @@ static const sqlite3_io_methods sqljs_io_methods = {
 
 /*
 ** ---------------------------------------------------------------------
+** Copy-on-write (read-write) variants. Files opened through
+** sqljs_open_paged_rw() get sqljs_io_methods_rw instead of the table
+** above; everything except xWrite/xTruncate/xSync is shared.
+** ---------------------------------------------------------------------
+*/
+
+static int sqljsWriteRw(
+  sqlite3_file *pFile,
+  const void *zBuf,
+  int iAmt,
+  sqlite3_int64 iOfst
+){
+  SqljsFile *p = (SqljsFile*)pFile;
+  if( g_xJsWrite==0 ) return SQLITE_IOERR_WRITE;
+  /* The VFS write contract is all-or-nothing: the JS side either records
+  ** the whole range in its overlay or reports failure. */
+  if( g_xJsWrite(p->fileId, zBuf, iAmt, iOfst)!=0 ){
+    return SQLITE_IOERR_WRITE;
+  }
+  return SQLITE_OK;
+}
+
+static int sqljsTruncateRw(sqlite3_file *pFile, sqlite3_int64 size){
+  SqljsFile *p = (SqljsFile*)pFile;
+  if( g_xJsTruncate==0 ) return SQLITE_IOERR_TRUNCATE;
+  if( g_xJsTruncate(p->fileId, size)!=0 ){
+    return SQLITE_IOERR_TRUNCATE;
+  }
+  return SQLITE_OK;
+}
+
+static int sqljsSyncRw(sqlite3_file *pFile, int flags){
+  /* xJsWrite already stored the bytes in the host overlay synchronously
+  ** and there is no durable medium behind it, so there is nothing left
+  ** to flush. Reporting success keeps COMMIT working. */
+  (void)pFile; (void)flags;
+  return SQLITE_OK;
+}
+
+static const sqlite3_io_methods sqljs_io_methods_rw = {
+  1,                               /* iVersion: no shm (v2) / fetch (v3) */
+  sqljsClose,                      /* xClose */
+  sqljsRead,                       /* xRead */
+  sqljsWriteRw,                    /* xWrite */
+  sqljsTruncateRw,                 /* xTruncate */
+  sqljsSyncRw,                     /* xSync */
+  sqljsFileSize,                   /* xFileSize */
+  sqljsLock,                       /* xLock */
+  sqljsUnlock,                     /* xUnlock */
+  sqljsCheckReservedLock,          /* xCheckReservedLock */
+  sqljsFileControl,                /* xFileControl */
+  sqljsSectorSize,                 /* xSectorSize */
+  sqljsDeviceCharacteristics,      /* xDeviceCharacteristics */
+  0, 0, 0, 0,                      /* xShmMap..xShmUnmap: iVersion 1 */
+  0, 0                             /* xFetch, xUnfetch: iVersion 1 */
+};
+
+/*
+** ---------------------------------------------------------------------
 ** sqlite3_vfs
 ** ---------------------------------------------------------------------
 */
@@ -216,9 +309,11 @@ static int sqljsOpen(
   }
 
   /* Anything else that is not the main database (rollback journal, WAL,
-  ** super-journal) must never be opened in read-only paged mode: xAccess
-  ** reports them absent and writes fail with SQLITE_READONLY first.
-  ** Refuse loudly so a logic error surfaces as a clean failure.
+  ** super-journal) must never be opened in paged mode: xAccess reports
+  ** them absent, read-only files fail every write path with
+  ** SQLITE_READONLY, and read-write files keep their rollback journal in
+  ** memory (sqljs_open_paged_rw), so any such open would be a logic
+  ** error. Refuse loudly so a logic error surfaces as a clean failure.
   ** pMethods stays 0 so SQLite will not call xClose on this file. */
   if( (flags & SQLITE_OPEN_MAIN_DB)==0 ){
     pFile->pMethods = 0;
@@ -229,10 +324,18 @@ static int sqljsOpen(
     pFile->pMethods = 0;
     return SQLITE_CANTOPEN;        /* not registered */
   }
-  if( flags & (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
-               | SQLITE_OPEN_DELETEONCLOSE) ){
+  /* The host file always exists (its id names it) and the host overlay
+  ** never disappears behind SQLite's back, so create/delete semantics
+  ** make no sense in either mode. */
+  if( flags & (SQLITE_OPEN_CREATE | SQLITE_OPEN_DELETEONCLOSE) ){
     pFile->pMethods = 0;
-    return SQLITE_CANTOPEN;        /* strictly read-only */
+    return SQLITE_CANTOPEN;
+  }
+  /* Read-write opens additionally need the copy-on-write callbacks. */
+  if( (flags & SQLITE_OPEN_READWRITE)!=0
+      && (g_xJsWrite==0 || g_xJsTruncate==0) ){
+    pFile->pMethods = 0;
+    return SQLITE_CANTOPEN;        /* sqljs_vfs_register_rw not called */
   }
 
   /* Parse the fileId out of "sqljs-paged-<decimal>". */
@@ -255,7 +358,9 @@ static int sqljsOpen(
 
   memset(p, 0, sizeof(*p));
   p->fileId = (int)fileId;
-  p->base.pMethods = &sqljs_io_methods;
+  p->base.pMethods = (flags & SQLITE_OPEN_READWRITE)!=0
+      ? &sqljs_io_methods_rw
+      : &sqljs_io_methods;
   if( pOutFlags ) *pOutFlags = flags;
   return SQLITE_OK;
 }
@@ -276,10 +381,10 @@ static int sqljsAccess(
   int *pResOut
 ){
   /* Report every probed path as absent/unwritable. This is what keeps a
-  ** read-only paged connection from ever trying to recover a hot journal
-  ** or open a WAL: hasHotJournal() and pagerOpenWalIfPresent() ask here
-  ** first and take the "no such file" path. Answered entirely C-side; no
-  ** JS callback is involved. */
+  ** paged connection (either mode) from ever trying to recover a hot
+  ** journal or open a WAL: hasHotJournal() and pagerOpenWalIfPresent()
+  ** ask here first and take the "no such file" path. Answered entirely
+  ** C-side; no JS callback is involved. */
   (void)pVfs; (void)zName; (void)flags;
   *pResOut = 0;
   return SQLITE_OK;
@@ -424,4 +529,51 @@ int sqljs_open_paged(int fileId, sqlite3 **ppDb){
                    SQLJS_PATH_PREFIX "%d", fileId);
   return sqlite3_open_v2(zName, ppDb, SQLITE_OPEN_READONLY,
                          SQLJS_VFS_NAME);
+}
+
+/*
+** Install the copy-on-write callbacks. Requires sqljs_vfs_register() to
+** have succeeded first (the VFS itself, and read/size, must exist before
+** writes can mean anything). Safe to call more than once; later calls
+** only swap the callback pointers.
+*/
+int sqljs_vfs_register_rw(sqljs_write_fn xWrite, sqljs_truncate_fn xTruncate){
+  if( xWrite==0 || xTruncate==0 ) return SQLITE_MISUSE;
+  if( sqlite3_vfs_find(SQLJS_VFS_NAME)==0 ){
+    return SQLITE_MISUSE;          /* sqljs_vfs_register not called */
+  }
+  g_xJsWrite = xWrite;
+  g_xJsTruncate = xTruncate;
+  return SQLITE_OK;
+}
+
+/*
+** Open host file `fileId` as a copy-on-write paged database: reads merge
+** the host overlay over the unchanged base file, writes land in the
+** overlay only. The rollback journal is forced into memory here, at the
+** only place that cannot be skipped, because the VFS refuses journal
+** opens (see xOpen/xAccess). No write can happen between open and the
+** pragma: this connection is not shared yet.
+**
+** On failure a handle may still be returned in *ppDb (per
+** sqlite3_open_v2 semantics) so the caller can read sqlite3_errmsg()
+** before closing it.
+*/
+int sqljs_open_paged_rw(int fileId, sqlite3 **ppDb){
+  char zName[64];
+  int rc;
+  if( ppDb==0 ) return SQLITE_MISUSE;
+  *ppDb = 0;
+  if( g_xJsRead==0 || g_xJsSize==0
+      || g_xJsWrite==0 || g_xJsTruncate==0
+      || sqlite3_vfs_find(SQLJS_VFS_NAME)==0 ){
+    return SQLITE_MISUSE;          /* register/register_rw not called */
+  }
+  if( fileId<0 ) return SQLITE_MISUSE;
+  sqlite3_snprintf((int)sizeof(zName), zName,
+                   SQLJS_PATH_PREFIX "%d", fileId);
+  rc = sqlite3_open_v2(zName, ppDb, SQLITE_OPEN_READWRITE,
+                       SQLJS_VFS_NAME);
+  if( rc!=SQLITE_OK ) return rc;
+  return sqlite3_exec(*ppDb, "PRAGMA journal_mode=MEMORY", 0, 0, 0);
 }
