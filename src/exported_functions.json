@@ -45,5 +45,7 @@
 "_RegisterExtensionFunctions",
 "_sqlite3_progress_handler",
 "_sqlite3_interrupt",
-"_sqlite3_update_hook"
+"_sqlite3_update_hook",
+"_sqljs_vfs_register",
+"_sqljs_open_paged"
 ]
