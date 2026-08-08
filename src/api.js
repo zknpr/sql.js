@@ -255,6 +255,17 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "",
         ["number"]
     );
+    // Paged (page-on-demand) database support, implemented in src/vfs.c
+    var sqljs_vfs_register = cwrap(
+        "sqljs_vfs_register",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_open_paged = cwrap(
+        "sqljs_open_paged",
+        "number",
+        ["number", "number"]
+    );
 
     /**
     * @classdesc
@@ -1640,6 +1651,223 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
      * @param {number} rowId
      * - The [rowid](https://www.sqlite.org/rowidtable.html) of the changed row
      */
+
+    /*
+     * Page-on-demand databases.
+     *
+     * A paged database is a read-only snapshot that stays on the host
+     * side: SQLite pulls only the pages it needs through the sqljs_host
+     * VFS (src/vfs.c) instead of the whole file being copied into the
+     * WASM heap. The host mapping lives in pagedHostFiles, keyed by the
+     * numeric fileId baked into the VFS-level path; the two C->JS
+     * trampolines below dispatch on that id, so a single pair of
+     * wasm-table slots (allocated once, on first use) serves every paged
+     * database for the lifetime of the module — close() releases the
+     * host mapping and there is no addFunction/removeFunction churn per
+     * open/close cycle.
+     */
+    var pagedHostFiles = {};
+    var nextPagedFileId = 1;
+    var pagedReadFunctionPtr = null;
+    var pagedSizeFunctionPtr = null;
+
+    // int cb(int fileId, void *dst, int amt, sqlite3_int64 offset)
+    // Returns the number of bytes copied into dst. Fewer than amt means
+    // EOF (vfs.c zero-fills the tail and reports the short read to
+    // SQLite); a negative value means I/O error.
+    function pagedReadTrampoline(fileId, dst, amt, offsetBigInt) {
+        var host = pagedHostFiles[fileId];
+        var offset;
+        var bytes;
+        var length;
+        if (!host) {
+            return -1;
+        }
+        // The sqlite3_int64 offset arrives as a BigInt. Number keeps it
+        // exact below 2^53, far beyond any host-servable file; larger
+        // (or negative) offsets are rejected as corrupt.
+        offset = Number(offsetBigInt);
+        if (offset < 0 || !Number.isSafeInteger(offset)) {
+            return -1;
+        }
+        // An exception must not unwind through SQLite's C frames; report
+        // a throwing (or misbehaving) host as an I/O error instead.
+        try {
+            bytes = host["read"](offset, amt);
+            if (bytes == null) {
+                return 0;
+            }
+            length = bytes.length;
+            if (length > amt) {
+                bytes = bytes.subarray(0, amt);
+                length = amt;
+            }
+            HEAPU8.set(bytes, dst);
+            return length;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    // double cb(int fileId) -> file size in bytes, negative on error.
+    // A double is exact through 2^53 - 1 bytes, so no BigInt is needed.
+    function pagedSizeTrampoline(fileId) {
+        var host = pagedHostFiles[fileId];
+        var size;
+        if (!host) {
+            return -1;
+        }
+        try {
+            size = host["size"]();
+        } catch (error) {
+            return -1;
+        }
+        if (
+            typeof size !== "number"
+            || size < 0
+            || !Number.isSafeInteger(size)
+        ) {
+            return -1;
+        }
+        return size;
+    }
+
+    function pagedExport() {
+        // There is no MEMFS node to read back, and streaming gigabytes
+        // through the WASM heap would defeat the point of paged mode.
+        throw new Error(
+            "paged databases are read-only snapshots; export() is"
+            + " unsupported in stage 0"
+        );
+    }
+
+    // close() for paged databases: the same teardown as
+    // Database.prototype.close minus the MEMFS unlink (no backing node
+    // exists), plus the release of the host mapping. Kept separate so
+    // the buffer-backed path stays untouched.
+    function pagedClose() {
+        if (this.db === null) {
+            return;
+        }
+        Object.values(this.statements).forEach(function each(stmt) {
+            stmt.free();
+        });
+        Object.values(this.functions).forEach(removeFunction);
+        this.functions = {};
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
+        if (this.updateHookFunctionPtr) {
+            removeFunction(this.updateHookFunctionPtr);
+            this.updateHookFunctionPtr = undefined;
+        }
+        this.handleError(sqlite3_close_v2(this.db));
+        delete pagedHostFiles[this.pagedFileId];
+        this.db = null;
+    }
+
+    /** Open a read-only database served page-by-page by the host,
+    without copying it into the WASM heap.
+
+    The returned object is a regular {@link Database} as far as queries
+    are concerned (prepare, exec, each, ...), with two differences:
+    it cannot be written to (SQLite reports "attempt to write a readonly
+    database") and `export()` throws.
+
+    @param {Object} hostIo host file accessor
+    @param {function(number,number):Uint8Array} hostIo.read
+    called as `read(offset, length)`; must return the bytes at absolute
+    byte offset `offset`, at most `length` of them. Returning fewer
+    bytes signals EOF at `offset + returned.length`.
+    @param {function():number} hostIo.size
+    must return the file size in bytes
+    @return {Database} a Database backed by the host file
+    @example
+    var db = SQL.Database.openPaged({
+        size: function () { return fileSize; },
+        read: function (offset, length) {
+            return readBytesSomehow(offset, length);
+        }
+    });
+    var res = db.exec("SELECT * FROM t WHERE id = 42");
+    db.close();
+     */
+    Database["openPaged"] = function openPaged(hostIo) {
+        var fileId;
+        var pDb;
+        var returnCode;
+        var errorMessage;
+        var db;
+        if (
+            !hostIo
+            || typeof hostIo["read"] !== "function"
+            || typeof hostIo["size"] !== "function"
+        ) {
+            throw new Error(
+                "openPaged requires a hostIo object with"
+                + " read(offset, length) and size() functions"
+            );
+        }
+        if (pagedReadFunctionPtr === null) {
+            pagedReadFunctionPtr = addFunction(
+                pagedReadTrampoline,
+                "iiiij"
+            );
+            pagedSizeFunctionPtr = addFunction(
+                pagedSizeTrampoline,
+                "di"
+            );
+        }
+        returnCode = sqljs_vfs_register(
+            pagedReadFunctionPtr,
+            pagedSizeFunctionPtr
+        );
+        if (returnCode !== SQLITE_OK) {
+            throw new Error(
+                "could not register the sqljs_host VFS (error code "
+                + returnCode + ")"
+            );
+        }
+        fileId = nextPagedFileId;
+        nextPagedFileId += 1;
+        pagedHostFiles[fileId] = hostIo;
+        try {
+            returnCode = sqljs_open_paged(fileId, apiTemp);
+            pDb = getValue(apiTemp, "i32");
+            if (returnCode !== SQLITE_OK) {
+                // Like sqlite3_open, sqlite3_open_v2 hands back a handle
+                // even on failure so the error message can be read.
+                errorMessage = pDb !== NULL
+                    ? sqlite3_errmsg(pDb)
+                    : "SQLite error " + returnCode;
+                if (pDb !== NULL) {
+                    sqlite3_close_v2(pDb);
+                }
+                throw new Error(errorMessage);
+            }
+        } catch (openError) {
+            delete pagedHostFiles[fileId];
+            throw openError;
+        }
+        db = Object.create(Database.prototype);
+        db.db = pDb;
+        // No MEMFS node backs this database; filename is only meaningful
+        // for buffer-backed instances.
+        db.filename = null;
+        db.pagedFileId = fileId;
+        db.statements = {};
+        db.functions = {};
+        registerExtensionFunctions(db.db);
+        // Instance-level overrides (both the minified and the public
+        // name, mirroring the prototype aliasing below).
+        db.export = pagedExport;
+        db["export"] = pagedExport;
+        db.close = pagedClose;
+        db["close"] = pagedClose;
+        return db;
+    };
 
     // Preserve public API names across minification.
     /* eslint-disable no-self-assign */

@@ -76,7 +76,7 @@ EMFLAGS_DEBUG = \
 	-s ASSERTIONS=2 \
 	-O1
 
-BITCODE_FILES = out/sqlite3.o out/extension-functions.o
+BITCODE_FILES = out/sqlite3.o out/extension-functions.o out/vfs.o
 
 OUTPUT_WRAPPER_FILES = src/shell-pre.js src/shell-post.js
 
@@ -181,6 +181,14 @@ out/extension-functions.o: sqlite-src/$(SQLITE_AMALGAMATION)
 	mkdir -p out
 	# Generate llvm bitcode
 	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -c sqlite-src/$(SQLITE_AMALGAMATION)/extension-functions.c -o $@
+
+# vfs.c is first-party source (it lives in src/, not cache/), so unlike the
+# downloaded sqlite3/extension-functions sources it needs no checksum step;
+# it only needs the amalgamation present for sqlite3.h.
+out/vfs.o: src/vfs.c sqlite-src/$(SQLITE_AMALGAMATION)
+	mkdir -p out
+	# Generate llvm bitcode
+	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -Isqlite-src/$(SQLITE_AMALGAMATION) -c src/vfs.c -o $@
 
 # TODO: This target appears to be unused. If we re-instatate it, we'll need to add more files inside of the JS folder
 # module.tar.gz: test package.json AUTHORS README.md dist/sql-asm.js
