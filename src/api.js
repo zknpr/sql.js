@@ -2124,6 +2124,84 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         return out;
     }
 
+    /**
+     * @typedef {Object} Database.PagedWritableOverlayChunk
+     * @property {number} index zero-based chunk index
+     * @property {Uint8Array} data exactly `chunkSize` overlay bytes
+     */
+
+    /**
+     * @typedef {Object} Database.PagedWritableOverlay
+     * @property {number} chunkSize size of every chunk in bytes
+     * @property {number} logicalSize exact merged-image size in bytes
+     * @property {number} baseLimit exclusive upper bound for base reads
+     * @property {Array<Database.PagedWritableOverlayChunk>} chunks
+     * overlay chunks, sorted by ascending `index`
+     */
+
+    /** Return a snapshot of this database's copy-on-write overlay without
+    reading or materializing the base file.
+
+    Reconstruction contract (using the same immutable base snapshot passed
+    to `openPagedWritable`): create an output whose length is exactly
+    `logicalSize`, then process aligned `chunkSize` ranges from byte zero.
+    For a range with an entry in `chunks`, bytes from that entry win over all
+    base bytes. For a range without an entry, read base bytes only below the
+    exclusive `baseLimit`; a base read must never cross `baseLimit`, even if
+    the physical base is longer. A short read below `baseLimit` is an error,
+    not a hole. Fill the remainder of that range with zeros (these are growth
+    holes or bytes masked by a prior truncation). Ignore any chunk payload
+    tail at or beyond `logicalSize`.
+
+    `logicalSize` is the final truncation boundary: bytes at or beyond it are
+    absent, including when it is smaller than the original base. `baseLimit`
+    never expands after a shrink, so if `logicalSize` later grows, base bytes
+    in `[baseLimit, logicalSize)` must not reappear unless an overlay chunk
+    supplies them. Following these rules produces byte-for-byte the same image
+    as `export()` at the time this method returns.
+
+    Every chunk payload is copied. The live overlay arrays remain mutable by
+    later SQLite writes and truncation, and a host may transfer (and detach) a
+    returned buffer. Exposing those arrays directly would let either action
+    mutate or corrupt the database and could turn an idle snapshot into torn
+    state. Only dirty chunks are copied; no base bytes are read or copied.
+
+    Like `export()`, this method throws while a transaction is open because
+    the overlay may contain pages that its in-memory rollback journal has not
+    yet committed or undone.
+
+    @return {Database.PagedWritableOverlay} caller-owned snapshot
+     */
+    function pagedExportWritableOverlay() {
+        var overlay;
+        var chunks = [];
+        if (this.db === null) {
+            throw new Error("Database closed");
+        }
+        if (sqlite3_get_autocommit(this.db) === 0) {
+            throw new Error(
+                "cannot export a paged database while a transaction is"
+                + " open; COMMIT or ROLLBACK first"
+            );
+        }
+        overlay = pagedOverlays[this.pagedFileId];
+        overlay.chunks.forEach(function each(chunk, index) {
+            chunks.push({
+                "index": index,
+                "data": chunk.slice()
+            });
+        });
+        chunks.sort(function byChunkIndex(left, right) {
+            return left["index"] - right["index"];
+        });
+        return {
+            "chunkSize": overlay.chunkSize,
+            "logicalSize": overlay.logicalSize,
+            "baseLimit": overlay.baseLimit,
+            "chunks": chunks
+        };
+    }
+
     // close() for paged databases (both modes): the same teardown as
     // Database.prototype.close minus the MEMFS unlink (no backing node
     // exists), plus the release of the host mapping and, for
@@ -2275,6 +2353,8 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
       ROLLBACK work without a journal file ever existing;
     - `export()` produces the merged image (base file + overlay) as a
       Uint8Array, and throws while a transaction is open;
+    - `exportPagedWritableOverlay()` returns the copied dirty chunks and
+      reconstruction metadata without reading or materializing the base;
     - `close()` releases the overlay.
 
     @param {Object} hostIo host file accessor
@@ -2402,6 +2482,8 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // name, mirroring the prototype aliasing below).
         db.export = pagedExportWritable;
         db["export"] = pagedExportWritable;
+        db.exportPagedWritableOverlay = pagedExportWritableOverlay;
+        db["exportPagedWritableOverlay"] = pagedExportWritableOverlay;
         db.close = pagedClose;
         db["close"] = pagedClose;
         return db;
