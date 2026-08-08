@@ -46,6 +46,9 @@
 "_sqlite3_progress_handler",
 "_sqlite3_interrupt",
 "_sqlite3_update_hook",
+"_sqlite3_get_autocommit",
 "_sqljs_vfs_register",
-"_sqljs_open_paged"
+"_sqljs_open_paged",
+"_sqljs_vfs_register_rw",
+"_sqljs_open_paged_rw"
 ]

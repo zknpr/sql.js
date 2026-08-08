@@ -255,6 +255,11 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "",
         ["number"]
     );
+    var sqlite3_get_autocommit = cwrap(
+        "sqlite3_get_autocommit",
+        "number",
+        ["number"]
+    );
     // Paged (page-on-demand) database support, implemented in src/vfs.c
     var sqljs_vfs_register = cwrap(
         "sqljs_vfs_register",
@@ -263,6 +268,16 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     );
     var sqljs_open_paged = cwrap(
         "sqljs_open_paged",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_vfs_register_rw = cwrap(
+        "sqljs_vfs_register_rw",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_open_paged_rw = cwrap(
+        "sqljs_open_paged_rw",
         "number",
         ["number", "number"]
     );
@@ -1655,21 +1670,46 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     /*
      * Page-on-demand databases.
      *
-     * A paged database is a read-only snapshot that stays on the host
-     * side: SQLite pulls only the pages it needs through the sqljs_host
-     * VFS (src/vfs.c) instead of the whole file being copied into the
-     * WASM heap. The host mapping lives in pagedHostFiles, keyed by the
-     * numeric fileId baked into the VFS-level path; the two C->JS
-     * trampolines below dispatch on that id, so a single pair of
-     * wasm-table slots (allocated once, on first use) serves every paged
-     * database for the lifetime of the module — close() releases the
-     * host mapping and there is no addFunction/removeFunction churn per
-     * open/close cycle.
+     * A paged database stays on the host side: SQLite pulls only the
+     * pages it needs through the sqljs_host VFS (src/vfs.c) instead of
+     * the whole file being copied into the WASM heap. The host mapping
+     * lives in pagedHostFiles, keyed by the numeric fileId baked into
+     * the VFS-level path; the C->JS trampolines below dispatch on that
+     * id, so a single set of wasm-table slots (allocated once, on first
+     * use) serves every paged database for the lifetime of the module —
+     * close() releases the per-file state and there is no
+     * addFunction/removeFunction churn per open/close cycle. (The slots
+     * are shared by all open paged databases, so they are deliberately
+     * never removeFunction'd.)
+     *
+     * openPaged() serves a read-only snapshot. openPagedWritable() adds
+     * copy-on-write: each write is recorded in a per-file overlay
+     * (pagedOverlays[fileId]) that lives in host memory — a Map of
+     * page-sized chunks — reads merge overlay-over-base, and the base
+     * file is NEVER modified. The hostIo contract is identical in both
+     * modes: hostIo.read always serves the unchanged base file; the
+     * merge is owned entirely by this module so every consumer gets the
+     * same, tested copy-on-write semantics.
+     *
+     * Overlay invariants:
+     *   - chunkSize matches the database page size when the base header
+     *     is readable, so ordinary page writes replace whole chunks;
+     *   - logicalSize is the file size SQLite sees: the base size is
+     *     snapshotted at open, then evolves only through xWrite growth
+     *     and xTruncate — the host size() is not consulted again;
+     *   - baseLimit masks the base file after truncation: base bytes at
+     *     or beyond it must never be served again (a VACUUM shrink
+     *     followed by growth would otherwise resurrect stale bytes);
+     *     bytes below logicalSize covered by neither overlay nor
+     *     baseLimit read as zeros.
      */
     var pagedHostFiles = {};
+    var pagedOverlays = {};
     var nextPagedFileId = 1;
     var pagedReadFunctionPtr = null;
     var pagedSizeFunctionPtr = null;
+    var pagedWriteFunctionPtr = null;
+    var pagedTruncateFunctionPtr = null;
 
     // int cb(int fileId, void *dst, int amt, sqlite3_int64 offset)
     // Returns the number of bytes copied into dst. Fewer than amt means
@@ -1677,6 +1717,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     // SQLite); a negative value means I/O error.
     function pagedReadTrampoline(fileId, dst, amt, offsetBigInt) {
         var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
         var offset;
         var bytes;
         var length;
@@ -1693,6 +1734,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // An exception must not unwind through SQLite's C frames; report
         // a throwing (or misbehaving) host as an I/O error instead.
         try {
+            if (overlay) {
+                // Copy-on-write file: merged view, overlay wins.
+                return pagedOverlayRead(host, overlay, dst, amt, offset);
+            }
             bytes = host["read"](offset, amt);
             if (bytes == null) {
                 return 0;
@@ -1713,9 +1758,16 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     // A double is exact through 2^53 - 1 bytes, so no BigInt is needed.
     function pagedSizeTrampoline(fileId) {
         var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
         var size;
         if (!host) {
             return -1;
+        }
+        if (overlay) {
+            // Copy-on-write file: the logical size is VFS-owned state
+            // (see the overlay invariants above); the host size() is a
+            // base-file property and is not consulted after open.
+            return overlay.logicalSize;
         }
         try {
             size = host["size"]();
@@ -1732,19 +1784,353 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         return size;
     }
 
+    /*
+     * Overlay chunks align with the database's own page size (header
+     * bytes 16/17, big-endian; the value 1 means 65536) so ordinary page
+     * writes replace exactly one chunk and never trigger a
+     * read-modify-write against the base. Falls back to 4096 — also
+     * SQLite's default page size — when the header cannot be read (e.g.
+     * a zero-length base). A mismatched chunk size only costs base
+     * re-reads on partially covered chunks; correctness does not depend
+     * on it.
+     */
+    function detectPagedChunkSize(hostIo) {
+        var bytes;
+        var pageSize;
+        try {
+            bytes = hostIo["read"](16, 2);
+        } catch (error) {
+            return 4096;
+        }
+        if (!bytes || bytes.length < 2) {
+            return 4096;
+        }
+        pageSize = (bytes[0] * 256) + bytes[1];
+        if (pageSize === 1) {
+            return 65536;
+        }
+        if (
+            pageSize >= 512
+            && pageSize <= 32768
+            && (pageSize & (pageSize - 1)) === 0
+        ) {
+            return pageSize;
+        }
+        return 4096;
+    }
+
+    /*
+     * Merged read for a copy-on-write paged file. Overlay chunks win
+     * over base bytes; bytes below logicalSize covered by neither the
+     * overlay nor baseLimit (growth holes, truncate-masked regions) read
+     * as zeros. Nothing is served at or beyond logicalSize. Returns how
+     * many bytes were produced at dst: fewer than amt means EOF, which
+     * vfs.c turns into the standard zero-filled short read. A base read
+     * that comes back short below baseLimit is a host contract violation
+     * (the base file must not change mid-session); serving fabricated
+     * zeros as data would corrupt reads, so the merge stops there and
+     * the pager sees a clean short-read error.
+     */
+    function pagedOverlayRead(host, overlay, dst, amt, offset) {
+        var chunkSize = overlay.chunkSize;
+        var toServe = overlay.logicalSize - offset;
+        var served = 0;
+        var pos = offset;
+        var chunkIndex;
+        var within;
+        var take;
+        var chunk;
+        var baseWant;
+        var baseBytes;
+        var baseGot;
+        if (toServe > amt) {
+            toServe = amt;
+        }
+        while (served < toServe) {
+            chunkIndex = Math.floor(pos / chunkSize);
+            within = pos - (chunkIndex * chunkSize);
+            take = chunkSize - within;
+            if (take > toServe - served) {
+                take = toServe - served;
+            }
+            chunk = overlay.chunks.get(chunkIndex);
+            if (chunk) {
+                HEAPU8.set(
+                    chunk.subarray(within, within + take),
+                    dst + served
+                );
+            } else {
+                baseWant = overlay.baseLimit - pos;
+                if (baseWant > take) {
+                    baseWant = take;
+                }
+                if (baseWant > 0) {
+                    baseBytes = host["read"](pos, baseWant);
+                    baseGot = baseBytes ? baseBytes.length : 0;
+                    if (baseGot > baseWant) {
+                        baseBytes = baseBytes.subarray(0, baseWant);
+                        baseGot = baseWant;
+                    }
+                    if (baseGot > 0) {
+                        HEAPU8.set(baseBytes, dst + served);
+                    }
+                    if (baseGot < baseWant) {
+                        return served + baseGot;
+                    }
+                } else {
+                    baseWant = 0;
+                }
+                if (take > baseWant) {
+                    // growth hole / truncate-masked region: zeros
+                    HEAPU8.fill(
+                        0,
+                        dst + served + baseWant,
+                        dst + served + take
+                    );
+                }
+            }
+            served += take;
+            pos += take;
+        }
+        return served;
+    }
+
+    /*
+     * Materialize the base-file content of a chunk that is about to be
+     * partially overwritten, so its untouched bytes survive. The part at
+     * or beyond baseLimit stays zero (growth hole / truncate mask). A
+     * short base read below baseLimit is a host contract violation and
+     * throws — persisting fabricated zeros into the overlay would be
+     * silent corruption.
+     */
+    function pagedFillChunkFromBase(host, overlay, chunk, chunkStart) {
+        var want = overlay.baseLimit - chunkStart;
+        var bytes;
+        var got;
+        if (want <= 0) {
+            return;
+        }
+        if (want > chunk.length) {
+            want = chunk.length;
+        }
+        bytes = host["read"](chunkStart, want);
+        got = bytes ? bytes.length : 0;
+        if (got > want) {
+            bytes = bytes.subarray(0, want);
+            got = want;
+        }
+        if (got < want) {
+            throw new Error(
+                "paged base file returned a short read at offset "
+                + chunkStart
+            );
+        }
+        chunk.set(bytes, 0);
+    }
+
+    /*
+     * Record a write in the copy-on-write overlay. Chunks fully covered
+     * by the write are replaced without consulting the base; partially
+     * covered chunks are materialized from the base first. The bytes are
+     * copied OUT of the WASM heap (chunk.set copies): the heap view is
+     * transient (memory growth reallocates it) and the source buffer
+     * belongs to SQLite. Never touches the host file.
+     */
+    function pagedOverlayWrite(host, overlay, src, amt, offset) {
+        var chunkSize = overlay.chunkSize;
+        var pos = offset;
+        var done = 0;
+        var chunkIndex;
+        var chunkStart;
+        var within;
+        var take;
+        var chunk;
+        while (done < amt) {
+            chunkIndex = Math.floor(pos / chunkSize);
+            chunkStart = chunkIndex * chunkSize;
+            within = pos - chunkStart;
+            take = chunkSize - within;
+            if (take > amt - done) {
+                take = amt - done;
+            }
+            chunk = overlay.chunks.get(chunkIndex);
+            if (!chunk) {
+                chunk = new Uint8Array(chunkSize);
+                if (take < chunkSize) {
+                    pagedFillChunkFromBase(host, overlay, chunk,
+                        chunkStart);
+                }
+                overlay.chunks.set(chunkIndex, chunk);
+            }
+            chunk.set(HEAPU8.subarray(src + done, src + done + take),
+                within);
+            pos += take;
+            done += take;
+        }
+        if (offset + amt > overlay.logicalSize) {
+            overlay.logicalSize = offset + amt;
+        }
+    }
+
+    /*
+     * Apply xTruncate to the overlay. On shrink, overlay chunks at or
+     * beyond the new size are dropped and a straddling chunk has its
+     * tail zeroed, so stale bytes cannot resurface if the file grows
+     * again; baseLimit caps how much of the base may still be served
+     * (see the overlay invariants). SQLite truncates on VACUUM and when
+     * rolling back a transaction that grew the file.
+     */
+    function pagedOverlayTruncate(overlay, size) {
+        var chunkSize = overlay.chunkSize;
+        var toDelete = [];
+        if (size < overlay.logicalSize) {
+            overlay.chunks.forEach(function each(chunk, chunkIndex) {
+                var chunkStart = chunkIndex * chunkSize;
+                if (chunkStart >= size) {
+                    toDelete.push(chunkIndex);
+                } else if (chunkStart + chunkSize > size) {
+                    chunk.fill(0, size - chunkStart);
+                }
+            });
+            toDelete.forEach(function each(chunkIndex) {
+                overlay.chunks.delete(chunkIndex);
+            });
+            if (size < overlay.baseLimit) {
+                overlay.baseLimit = size;
+            }
+        }
+        overlay.logicalSize = size;
+    }
+
+    // int cb(int fileId, const void *src, int amt, sqlite3_int64 offset)
+    // Records amt bytes at offset in the copy-on-write overlay.
+    // All-or-nothing: returns 0 on success, negative on failure (vfs.c
+    // maps failure to SQLITE_IOERR_WRITE and the statement fails
+    // cleanly).
+    function pagedWriteTrampoline(fileId, src, amt, offsetBigInt) {
+        var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
+        var offset;
+        if (!host || !overlay) {
+            return -1;
+        }
+        offset = Number(offsetBigInt);
+        if (offset < 0 || !Number.isSafeInteger(offset) || amt < 0) {
+            return -1;
+        }
+        // An exception must not unwind through SQLite's C frames.
+        try {
+            pagedOverlayWrite(host, overlay, src, amt, offset);
+            return 0;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    // int cb(int fileId, sqlite3_int64 size) -> 0 on success, negative
+    // on failure.
+    function pagedTruncateTrampoline(fileId, sizeBigInt) {
+        var overlay = pagedOverlays[fileId];
+        var size;
+        if (!overlay) {
+            return -1;
+        }
+        size = Number(sizeBigInt);
+        if (size < 0 || !Number.isSafeInteger(size)) {
+            return -1;
+        }
+        try {
+            pagedOverlayTruncate(overlay, size);
+            return 0;
+        } catch (error) {
+            return -1;
+        }
+    }
+
     function pagedExport() {
         // There is no MEMFS node to read back, and streaming gigabytes
         // through the WASM heap would defeat the point of paged mode.
         throw new Error(
-            "paged databases are read-only snapshots; export() is"
-            + " unsupported in stage 0"
+            "paged databases are read-only snapshots; export() is only"
+            + " available on openPagedWritable instances"
         );
     }
 
-    // close() for paged databases: the same teardown as
+    /*
+     * export() for copy-on-write paged databases: the merged image —
+     * overlay chunks where present, base bytes below baseLimit
+     * otherwise, zeros in the gaps — assembled chunk by chunk entirely
+     * in host memory; the WASM heap is not involved. Refuses to run
+     * while a transaction is open: the pager may have spilled
+     * uncommitted pages into the overlay, and the memory journal needed
+     * to undo them cannot leave the connection, so a mid-transaction
+     * image would not be a consistent database.
+     */
+    function pagedExportWritable() {
+        var overlay;
+        var host;
+        var out;
+        var chunkSize;
+        var pos;
+        var take;
+        var chunk;
+        var baseWant;
+        var bytes;
+        if (this.db === null) {
+            throw new Error("Database closed");
+        }
+        if (sqlite3_get_autocommit(this.db) === 0) {
+            throw new Error(
+                "cannot export a paged database while a transaction is"
+                + " open; COMMIT or ROLLBACK first"
+            );
+        }
+        overlay = pagedOverlays[this.pagedFileId];
+        host = pagedHostFiles[this.pagedFileId];
+        chunkSize = overlay.chunkSize;
+        out = new Uint8Array(overlay.logicalSize);
+        pos = 0;
+        while (pos < overlay.logicalSize) {
+            take = chunkSize;
+            if (take > overlay.logicalSize - pos) {
+                take = overlay.logicalSize - pos;
+            }
+            chunk = overlay.chunks.get(pos / chunkSize);
+            if (chunk) {
+                out.set(chunk.subarray(0, take), pos);
+            } else {
+                baseWant = overlay.baseLimit - pos;
+                if (baseWant > take) {
+                    baseWant = take;
+                }
+                if (baseWant > 0) {
+                    bytes = host["read"](pos, baseWant);
+                    if (bytes && bytes.length > baseWant) {
+                        bytes = bytes.subarray(0, baseWant);
+                    }
+                    if (!bytes || bytes.length < baseWant) {
+                        throw new Error(
+                            "paged base file returned a short read"
+                            + " during export (offset " + pos + ")"
+                        );
+                    }
+                    out.set(bytes, pos);
+                }
+                // any remainder of this chunk is a growth hole or
+                // truncate-masked region: already zero
+            }
+            pos += take;
+        }
+        return out;
+    }
+
+    // close() for paged databases (both modes): the same teardown as
     // Database.prototype.close minus the MEMFS unlink (no backing node
-    // exists), plus the release of the host mapping. Kept separate so
-    // the buffer-backed path stays untouched.
+    // exists), plus the release of the host mapping and, for
+    // copy-on-write files, the overlay. Kept separate so the
+    // buffer-backed path stays untouched. Note the per-file state must
+    // outlive sqlite3_close_v2: closing with an open transaction rolls
+    // it back through the read/write trampolines.
     function pagedClose() {
         if (this.db === null) {
             return;
@@ -1765,6 +2151,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         }
         this.handleError(sqlite3_close_v2(this.db));
         delete pagedHostFiles[this.pagedFileId];
+        delete pagedOverlays[this.pagedFileId];
         this.db = null;
     }
 
@@ -1864,6 +2251,157 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // name, mirroring the prototype aliasing below).
         db.export = pagedExport;
         db["export"] = pagedExport;
+        db.close = pagedClose;
+        db["close"] = pagedClose;
+        return db;
+    };
+
+    /** Open a host-served database copy-on-write, without copying it
+    into the WASM heap and without ever modifying the host file.
+
+    Reads pull pages from the host exactly like
+    {@link Database.openPaged}; writes land in a host-memory overlay
+    owned by this module. The hostIo contract is IDENTICAL to openPaged
+    (`read` must keep serving the unchanged base file) — the same object
+    can back both modes. The base file must not change for the lifetime
+    of the instance: its size is snapshotted at open and reads are merged
+    against that snapshot.
+
+    The returned object is a regular writable {@link Database}
+    (prepare/run/exec/each and the statement API all work), with these
+    properties:
+    - the connection runs with `PRAGMA journal_mode=MEMORY`: the
+      rollback journal lives in memory, so failed statements and
+      ROLLBACK work without a journal file ever existing;
+    - `export()` produces the merged image (base file + overlay) as a
+      Uint8Array, and throws while a transaction is open;
+    - `close()` releases the overlay.
+
+    @param {Object} hostIo host file accessor
+    @param {function(number,number):Uint8Array} hostIo.read
+    called as `read(offset, length)`; must return the bytes of the
+    unchanged base file at absolute byte offset `offset`, at most
+    `length` of them. Returning fewer bytes signals EOF.
+    @param {function():number} hostIo.size
+    must return the base file size in bytes
+    @return {Database} a writable Database backed by base file + overlay
+    @example
+    var db = SQL.Database.openPagedWritable({
+        size: function () { return fileSize; },
+        read: function (offset, length) {
+            return readBytesSomehow(offset, length);
+        }
+    });
+    db.run("UPDATE t SET name = 'x' WHERE id = 42");
+    var mergedImage = db.export(); // base file itself is untouched
+    db.close();
+     */
+    Database["openPagedWritable"] = function openPagedWritable(hostIo) {
+        var fileId;
+        var pDb;
+        var returnCode;
+        var errorMessage;
+        var db;
+        var baseSize;
+        if (
+            !hostIo
+            || typeof hostIo["read"] !== "function"
+            || typeof hostIo["size"] !== "function"
+        ) {
+            throw new Error(
+                "openPagedWritable requires a hostIo object with"
+                + " read(offset, length) and size() functions"
+            );
+        }
+        // Snapshot the base size now: it seeds logicalSize/baseLimit and
+        // the host is never asked again (see the overlay invariants).
+        baseSize = hostIo["size"]();
+        if (
+            typeof baseSize !== "number"
+            || baseSize < 0
+            || !Number.isSafeInteger(baseSize)
+        ) {
+            throw new Error(
+                "hostIo.size() must return a non-negative byte count"
+            );
+        }
+        if (pagedReadFunctionPtr === null) {
+            pagedReadFunctionPtr = addFunction(
+                pagedReadTrampoline,
+                "iiiij"
+            );
+            pagedSizeFunctionPtr = addFunction(
+                pagedSizeTrampoline,
+                "di"
+            );
+        }
+        if (pagedWriteFunctionPtr === null) {
+            pagedWriteFunctionPtr = addFunction(
+                pagedWriteTrampoline,
+                "iiiij"
+            );
+            pagedTruncateFunctionPtr = addFunction(
+                pagedTruncateTrampoline,
+                "iij"
+            );
+        }
+        returnCode = sqljs_vfs_register(
+            pagedReadFunctionPtr,
+            pagedSizeFunctionPtr
+        );
+        if (returnCode === SQLITE_OK) {
+            returnCode = sqljs_vfs_register_rw(
+                pagedWriteFunctionPtr,
+                pagedTruncateFunctionPtr
+            );
+        }
+        if (returnCode !== SQLITE_OK) {
+            throw new Error(
+                "could not register the sqljs_host VFS (error code "
+                + returnCode + ")"
+            );
+        }
+        fileId = nextPagedFileId;
+        nextPagedFileId += 1;
+        pagedHostFiles[fileId] = hostIo;
+        pagedOverlays[fileId] = {
+            chunkSize: detectPagedChunkSize(hostIo),
+            chunks: new Map(),
+            logicalSize: baseSize,
+            baseLimit: baseSize
+        };
+        try {
+            returnCode = sqljs_open_paged_rw(fileId, apiTemp);
+            pDb = getValue(apiTemp, "i32");
+            if (returnCode !== SQLITE_OK) {
+                // Like sqlite3_open, sqlite3_open_v2 hands back a handle
+                // even on failure so the error message can be read.
+                errorMessage = pDb !== NULL
+                    ? sqlite3_errmsg(pDb)
+                    : "SQLite error " + returnCode;
+                if (pDb !== NULL) {
+                    sqlite3_close_v2(pDb);
+                }
+                throw new Error(errorMessage);
+            }
+        } catch (openError) {
+            delete pagedHostFiles[fileId];
+            delete pagedOverlays[fileId];
+            throw openError;
+        }
+        db = Object.create(Database.prototype);
+        db.db = pDb;
+        // No MEMFS node backs this database; filename is only meaningful
+        // for buffer-backed instances.
+        db.filename = null;
+        db.pagedFileId = fileId;
+        db.statements = {};
+        db.functions = {};
+        registerExtensionFunctions(db.db);
+        // Instance-level overrides (both the minified and the public
+        // name, mirroring the prototype aliasing below).
+        db.export = pagedExportWritable;
+        db["export"] = pagedExportWritable;
         db.close = pagedClose;
         db["close"] = pagedClose;
         return db;
