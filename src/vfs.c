@@ -485,6 +485,24 @@ static sqlite3_vfs sqljs_vfs = {
 ** ---------------------------------------------------------------------
 */
 
+static int sqljsPagedAuthorizer(
+  void *pContext,
+  int action,
+  const char *zDetail1,
+  const char *zDetail2,
+  const char *zDatabase,
+  const char *zTrigger
+){
+  (void)pContext;
+  (void)zDetail2;
+  (void)zDatabase;
+  (void)zTrigger;
+  if( action!=SQLITE_ATTACH ) return SQLITE_OK;
+  /* SQLite VACUUM needs a literal-empty scratch database; NULL filenames
+  ** are computed and non-empty filenames can reach another host image. */
+  return zDetail1!=0 && zDetail1[0]==0 ? SQLITE_OK : SQLITE_DENY;
+}
+
 /*
 ** Install/update the host callbacks and register the VFS (non-default,
 ** so the ordinary MEMFS-backed path is untouched). Safe to call more
@@ -518,6 +536,7 @@ int sqljs_vfs_register(sqljs_read_fn xRead, sqljs_size_fn xSize){
 */
 int sqljs_open_paged(int fileId, sqlite3 **ppDb){
   char zName[64];
+  int rc;
   if( ppDb==0 ) return SQLITE_MISUSE;
   *ppDb = 0;
   if( g_xJsRead==0 || g_xJsSize==0
@@ -527,8 +546,9 @@ int sqljs_open_paged(int fileId, sqlite3 **ppDb){
   if( fileId<0 ) return SQLITE_MISUSE;
   sqlite3_snprintf((int)sizeof(zName), zName,
                    SQLJS_PATH_PREFIX "%d", fileId);
-  return sqlite3_open_v2(zName, ppDb, SQLITE_OPEN_READONLY,
-                         SQLJS_VFS_NAME);
+  rc = sqlite3_open_v2(zName, ppDb, SQLITE_OPEN_READONLY, SQLJS_VFS_NAME);
+  if( rc!=SQLITE_OK ) return rc;
+  return sqlite3_set_authorizer(*ppDb, sqljsPagedAuthorizer, 0);
 }
 
 /*
@@ -574,6 +594,8 @@ int sqljs_open_paged_rw(int fileId, sqlite3 **ppDb){
                    SQLJS_PATH_PREFIX "%d", fileId);
   rc = sqlite3_open_v2(zName, ppDb, SQLITE_OPEN_READWRITE,
                        SQLJS_VFS_NAME);
+  if( rc!=SQLITE_OK ) return rc;
+  rc = sqlite3_set_authorizer(*ppDb, sqljsPagedAuthorizer, 0);
   if( rc!=SQLITE_OK ) return rc;
   return sqlite3_exec(*ppDb, "PRAGMA journal_mode=MEMORY", 0, 0, 0);
 }

@@ -42,13 +42,20 @@ function assertTemporaryTable(assert, db) {
     );
 }
 
-function assertNoVictimSchema(assert, db) {
+function assertNoAttachedSchema(assert, db) {
     var rows = db.exec("PRAGMA database_list")[0].values;
     assert.strictEqual(
-        rows.some(function hasVictim(row) { return row[1] === "victim"; }),
-        false,
-        "a rejected ATTACH must not leave a victim schema behind"
+        rows.every(function hasOnlyMainOrTemp(row) {
+            return row[1] === "main" || row[1] === "temp";
+        }),
+        true,
+        "a rejected ATTACH must not leave a schema behind"
     );
+}
+
+function assertAuthorizationDenied(assert, db, operation) {
+    assert.throws(operation, /not authorized|authorization denied/i);
+    assertNoAttachedSchema(assert, db);
 }
 
 function firstPagedTargetName(assert, target) {
@@ -109,10 +116,9 @@ function testReadOnlyAttachIsRejected(SQL, assert, attackerImage, targetImage) {
     try {
         assertOwnSentinel(assert, attacker, "read-only-attacker");
         assertTemporaryTable(assert, attacker);
-        assert.throws(function attachReadOnlyTarget() {
+        assertAuthorizationDenied(assert, attacker, function attachReadOnlyTarget() {
             attacker.exec("ATTACH DATABASE '" + targetName + "' AS victim");
-        }, /not authorized|authorization denied/i);
-        assertNoVictimSchema(assert, attacker);
+        });
         assertOwnSentinel(assert, target, "read-only-target");
     } finally {
         attacker.close();
@@ -126,13 +132,12 @@ function testWritableAttachIsRejected(SQL, assert, attackerImage, targetImage) {
     var targetName = firstPagedTargetName(assert, target);
 
     try {
-        assert.throws(function attachAndWriteTarget() {
+        assertAuthorizationDenied(assert, attacker, function attachAndWriteTarget() {
             attacker.exec(
                 "ATTACH DATABASE '" + targetName + "' AS victim;"
                 + "UPDATE victim.secrets SET value = 'stolen'"
             );
-        }, /not authorized|authorization denied/i);
-        assertNoVictimSchema(assert, attacker);
+        });
         assertOwnSentinel(assert, target, "writable-target");
     } finally {
         attacker.close();
@@ -167,6 +172,65 @@ function testWritablePositiveControl(SQL, assert, image) {
     }
 }
 
+function testLiteralEmptyScratch(SQL, assert, image, writable) {
+    var db = writable
+        ? SQL.Database.openPagedWritable(hostIo(image))
+        : SQL.Database.openPaged(hostIo(image));
+
+    try {
+        db.exec("ATTACH DATABASE '' AS scratch");
+        if (writable) {
+            db.run("CREATE TABLE scratch.sentinel(value TEXT)");
+            db.run(
+                "INSERT INTO scratch.sentinel(value) VALUES ('scratch-ok')"
+            );
+            assert.strictEqual(
+                singleValue(db, "SELECT value FROM scratch.sentinel"),
+                "scratch-ok"
+            );
+        } else {
+            assert.throws(function createReadOnlyScratchTable() {
+                db.run("CREATE TABLE scratch.sentinel(value TEXT)");
+            }, /readonly/i);
+            assert.strictEqual(
+                singleValue(db, "SELECT count(*) FROM scratch.sqlite_schema"),
+                0
+            );
+        }
+        db.exec("DETACH DATABASE scratch");
+        assertNoAttachedSchema(assert, db);
+    } finally {
+        db.close();
+    }
+}
+
+function testAttachBoundaries(SQL, assert, image, writable) {
+    var db = writable
+        ? SQL.Database.openPagedWritable(hostIo(image))
+        : SQL.Database.openPaged(hostIo(image));
+
+    try {
+        assertAuthorizationDenied(assert, db, function attachDynamicEmpty() {
+            db.run("ATTACH DATABASE ? AS dynamic_scratch", [""]);
+        });
+        assertAuthorizationDenied(assert, db, function attachNamedMemory() {
+            db.exec("ATTACH DATABASE ':memory:' AS named_memory");
+        });
+        assertAuthorizationDenied(assert, db, function attachNamedFile() {
+            db.exec("ATTACH DATABASE 'file:other.db' AS named_file");
+        });
+        assertAuthorizationDenied(assert, db, function vacuumIntoNamedFile() {
+            db.exec("VACUUM INTO 'blocked-vacuum.db'");
+        });
+        if (writable) {
+            db.run("VACUUM");
+            assertOwnSentinel(assert, db, "writable-attacker");
+        }
+    } finally {
+        db.close();
+    }
+}
+
 function testMemfsAttachPositiveControl(SQL, assert, image) {
     var attacker = new SQL.Database();
     var target = new SQL.Database(image);
@@ -178,7 +242,7 @@ function testMemfsAttachPositiveControl(SQL, assert, image) {
             "memfs-target"
         );
         attacker.exec("DETACH DATABASE victim");
-        assertNoVictimSchema(assert, attacker);
+        assertNoAttachedSchema(assert, attacker);
     } finally {
         attacker.close();
         target.close();
@@ -206,6 +270,10 @@ exports.test = async function test(SQL, assert) {
         writableAttackerImage,
         writableTargetImage
     );
+    testLiteralEmptyScratch(readOnlySQL, assert, readOnlyAttackerImage, false);
+    testLiteralEmptyScratch(writableSQL, assert, writableAttackerImage, true);
+    testAttachBoundaries(readOnlySQL, assert, readOnlyAttackerImage, false);
+    testAttachBoundaries(writableSQL, assert, writableAttackerImage, true);
     testWritablePositiveControl(SQL, assert, writableAttackerImage);
     testMemfsAttachPositiveControl(SQL, assert, memfsTargetImage);
 };
