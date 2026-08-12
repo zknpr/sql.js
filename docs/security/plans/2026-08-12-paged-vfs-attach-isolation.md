@@ -4,7 +4,7 @@
 
 **Goal:** Prevent SQL run on one host-backed paged connection from attaching and reading or modifying any other live host-backed image.
 
-**Architecture:** Install a connection-local SQLite authorizer immediately after each successful paged `sqlite3_open_v2()`. The authorizer denies only `SQLITE_ATTACH`; the ordinary MEMFS database constructor, temporary SQLite storage, and every non-ATTACH action remain unchanged.
+**Architecture:** Install a connection-local SQLite authorizer immediately after each successful paged `sqlite3_open_v2()`. The authorizer denies every named or non-literal `SQLITE_ATTACH` while allowing only SQLite's literal-empty anonymous scratch path; the ordinary MEMFS database constructor and every non-ATTACH action remain unchanged.
 
 **Tech Stack:** C, SQLite authorizer API, Emscripten/WebAssembly, Node.js test harness, Docker devcontainer.
 
@@ -13,10 +13,11 @@
 - Work only in `/Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation` on `agent/paged-vfs-attach-isolation`.
 - Follow `CLAUDE.md` and preserve ignored setup outputs.
 - Use the public `Database.openPaged()` and `Database.openPagedWritable()` APIs in the exploit regression; do not replace the test with a raw C stub.
-- Deny only `SQLITE_ATTACH` and only on paged connections. Ordinary `new SQL.Database()` connections must retain ATTACH support.
+- On paged connections, allow `SQLITE_ATTACH` only when SQLite reports a non-null literal filename whose first byte is NUL. Deny every non-empty, computed, or parameterized filename. Ordinary `new SQL.Database()` connections retain ATTACH support.
 - Install the authorizer before returning either handle and before writable mode executes `PRAGMA journal_mode=MEMORY`.
 - Propagate the exact non-OK return from `sqlite3_set_authorizer()` and preserve the existing open-handle error semantics.
 - Add no JS allocation, host callback, file-ID randomization, page-read check, or IPC operation.
+- Preserve ordinary writable `VACUUM`, which internally uses literal `ATTACH ''`. Keep `VACUUM INTO` denied because its destination is non-empty.
 - Build and test in `.devcontainer/Dockerfile`; the host lacks the pinned Emscripten and `sha3sum` toolchain.
 - Complete local verification before push. Open a normal ready-for-review PR, never a draft PR.
 
@@ -47,7 +48,7 @@
 
 - [ ] **Step 2: Assert both formerly exploitable ATTACH paths fail**
 
-  In `exports.test = function test(SQL, assert)`, keep two paged databases live at once and form the real synthetic target from `target.pagedFileId`:
+  Use a fresh sql.js module for each exploit probe, open the target before the attacker, and therefore establish the real target as `sqljs-paged-1` even when Closure renames `pagedFileId`. When the property is exposed, assert it equals 1 and form the same name from it:
 
   ```js
   var targetName = "sqljs-paged-" + target.pagedFileId;
@@ -60,7 +61,7 @@
 
 - [ ] **Step 3: Add positive controls**
 
-  Prove both paged modes can still select their own sentinel and create/query a `TEMP` table. For writable mode, update its own main database, roll a transaction back, commit a second update, and verify `exportPagedWritableOverlay()` reconstructs the committed image. Prove a normal `new SQL.Database()` can still ATTACH a MEMFS filename, so the policy is scoped to paged connections.
+  Prove both paged modes can still select their own sentinel and create/query a `TEMP` table. For writable mode, update its own main database, roll a transaction back, commit a second update, and verify `exportPagedWritableOverlay()` reconstructs the committed image. Prove a normal `new SQL.Database()` can still ATTACH a MEMFS filename, so the policy is scoped to paged connections. The literal-empty scratch exception is added in Task 2 after the unconditional authorizer produces RED evidence.
 
 - [ ] **Step 4: Run the regression against the pre-fix artifact and record RED**
 
@@ -85,10 +86,27 @@
 
 **Files:**
 
+- Modify: `test/test_paged_vfs_isolation.js`
 - Modify: `src/vfs.c:480-585`
-- Test: `test/test_paged_vfs_isolation.js`
 
-- [ ] **Step 1: Add the constant-time authorizer callback**
+- [ ] **Step 1: Add the literal-empty scratch boundary regression**
+
+  Through both public paged APIs, execute literal `ATTACH DATABASE '' AS scratch`, create and query a scratch-only sentinel table, then detach it. On a writable paged database, also assert ordinary `VACUUM` completes and preserves the main sentinel. Assert each of these remains rejected with an authorization error and leaves no attached schema:
+
+  ```js
+  db.run("ATTACH DATABASE ? AS dynamic_scratch", [""]);
+  db.exec("ATTACH DATABASE ':memory:' AS named_memory");
+  db.exec("ATTACH DATABASE 'file:other.db' AS named_file");
+  db.exec("VACUUM INTO 'blocked-vacuum.db'");
+  ```
+
+  The existing `sqljs-paged-1` read/write exploit assertions remain the primary security regression.
+
+- [ ] **Step 2: Run the current unconditional implementation and record RED**
+
+  Rebuild, then run the wasm and wasm-debug lanes. Expected: the new literal-empty scratch assertion and the existing writable-overlay `VACUUM` control fail with an authorization error, while the cross-host exploit assertions pass. This proves the exception is necessary for legitimate behavior rather than weakening the exploit test.
+
+- [ ] **Step 3: Add the constant-time authorizer callback**
 
   Add a file-local callback near the exported entry points. Name unused parameters and cast them to void to satisfy the C build:
 
@@ -102,19 +120,21 @@
     const char *zTrigger
   ){
     (void)pContext;
-    (void)zDetail1;
     (void)zDetail2;
     (void)zDatabase;
     (void)zTrigger;
-    return action==SQLITE_ATTACH ? SQLITE_DENY : SQLITE_OK;
+    if( action!=SQLITE_ATTACH ) return SQLITE_OK;
+    return zDetail1!=0 && zDetail1[0]==0 ? SQLITE_OK : SQLITE_DENY;
   }
   ```
 
-- [ ] **Step 2: Install it in the read-only open path**
+  The non-null requirement denies computed and parameterized filenames, for which SQLite does not provide a literal authorizer argument. The first-byte test allows only the literal empty filename used for anonymous scratch/VACUUM.
+
+- [ ] **Step 4: Install it in the read-only open path**
 
   Replace the direct return from `sqljs_open_paged()` with a local `rc`, return the open error unchanged, and otherwise return `sqlite3_set_authorizer(*ppDb, sqljsPagedAuthorizer, 0)`.
 
-- [ ] **Step 3: Install it before the writable journal pragma**
+- [ ] **Step 5: Install it before the writable journal pragma**
 
   In `sqljs_open_paged_rw()`, after the successful `sqlite3_open_v2()` call:
 
@@ -124,14 +144,14 @@
   return sqlite3_exec(*ppDb, "PRAGMA journal_mode=MEMORY", 0, 0, 0);
   ```
 
-- [ ] **Step 4: Build with the pinned toolchain**
+- [ ] **Step 6: Build with the pinned toolchain**
 
   ```bash
   docker build -t sqljs-paged-vfs-security -f .devcontainer/Dockerfile .
-  docker run --rm -v /Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation:/work -w /work sqljs-paged-vfs-security bash -lc 'npm ci && make clean && make'
+  docker run --rm -v /Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation:/work -w /work sqljs-paged-vfs-security bash -lc '. /emsdk/emsdk_env.sh && npm ci && make clean && make'
   ```
 
-- [ ] **Step 5: Run focused GREEN checks**
+- [ ] **Step 7: Run focused GREEN checks**
 
   ```bash
   node --unhandled-rejections=strict test/all.js wasm
@@ -139,12 +159,12 @@
   npm run lint
   ```
 
-  Expected: the exploit regression passes, temporary tables and COW controls pass, and no lint errors are reported.
+  Expected: named/computed ATTACH exploit and bypass cases are denied; literal empty scratch, ordinary VACUUM, temporary tables, and COW controls pass; no lint errors are reported.
 
-- [ ] **Step 6: Commit implementation**
+- [ ] **Step 8: Commit implementation and boundary tests**
 
   ```bash
-  git add src/vfs.c
+  git add test/test_paged_vfs_isolation.js src/vfs.c
   git commit -m "fix: isolate paged VFS connections"
   ```
 
