@@ -51,50 +51,25 @@ function assertNoVictimSchema(assert, db) {
     );
 }
 
-function isMissingPagedHostError(error) {
-    return /unable to open database: sqljs-paged-\d+/i.test(String(error));
+function firstPagedTargetName(assert, target) {
+    var targetName = "sqljs-paged-" + target.pagedFileId;
+
+    // Debug and unminified builds preserve this public property. A fresh
+    // module has no earlier paged connections, so its first target is ID 1.
+    if (typeof target.pagedFileId === "number") {
+        assert.strictEqual(target.pagedFileId, 1);
+        return targetName;
+    }
+    return "sqljs-paged-1";
 }
 
-function attachSyntheticTarget(attacker, target, sentinel, afterAttach) {
-    var targetName = "sqljs-paged-" + target.pagedFileId;
-    var candidate;
-    var attached;
-    var value;
+function loadFreshSql(sqlLibType) {
+    var libraryPath = require.resolve("../dist/sql-" + sqlLibType + ".js");
 
-    // Debug and unminified builds preserve this public property, so test the
-    // intended synthetic filename directly when it is available.
-    if (typeof target.pagedFileId === "number") {
-        attacker.exec("ATTACH DATABASE '" + targetName + "' AS victim");
-        afterAttach();
-        return;
-    }
-
-    // Closure may rename the public field in a release bundle. Probe a small,
-    // known-safe ID range while the target stays live, rather than coupling the
-    // public regression to a minifier-private property name.
-    for (candidate = 1; candidate <= 4096; candidate += 1) {
-        attached = false;
-        try {
-            attacker.exec(
-                "ATTACH DATABASE 'sqljs-paged-" + candidate + "' AS victim"
-            );
-            attached = true;
-            value = singleValue(attacker, "SELECT value FROM victim.secrets");
-            if (value === sentinel) {
-                afterAttach();
-                return;
-            }
-        } catch (error) {
-            if (!isMissingPagedHostError(error)) {
-                throw error;
-            }
-        } finally {
-            if (attached) {
-                attacker.exec("DETACH DATABASE victim");
-            }
-        }
-    }
-    throw new Error("could not reach the live paged VFS target");
+    // sql.js memoizes initSqlJs per CommonJS module. Evict it first so the
+    // target opened by each authorization probe deterministically gets ID 1.
+    delete require.cache[libraryPath];
+    return require("./load_sql_lib")(sqlLibType);
 }
 
 function reconstructOverlay(base, overlay) {
@@ -127,24 +102,15 @@ function reconstructOverlay(base, overlay) {
 }
 
 function testReadOnlyAttachIsRejected(SQL, assert, attackerImage, targetImage) {
-    var attacker = SQL.Database.openPaged(hostIo(attackerImage));
     var target = SQL.Database.openPaged(hostIo(targetImage));
-    var targetName = "sqljs-paged-" + target.pagedFileId;
+    var attacker = SQL.Database.openPaged(hostIo(attackerImage));
+    var targetName = firstPagedTargetName(assert, target);
 
     try {
         assertOwnSentinel(assert, attacker, "read-only-attacker");
         assertTemporaryTable(assert, attacker);
         assert.throws(function attachReadOnlyTarget() {
-            if (typeof target.pagedFileId === "number") {
-                attacker.exec("ATTACH DATABASE '" + targetName + "' AS victim");
-                return;
-            }
-            attachSyntheticTarget(
-                attacker,
-                target,
-                "read-only-target",
-                function attachedReadOnlyTarget() {}
-            );
+            attacker.exec("ATTACH DATABASE '" + targetName + "' AS victim");
         }, /not authorized|authorization denied/i);
         assertNoVictimSchema(assert, attacker);
         assertOwnSentinel(assert, target, "read-only-target");
@@ -155,26 +121,15 @@ function testReadOnlyAttachIsRejected(SQL, assert, attackerImage, targetImage) {
 }
 
 function testWritableAttachIsRejected(SQL, assert, attackerImage, targetImage) {
-    var attacker = SQL.Database.openPagedWritable(hostIo(attackerImage));
     var target = SQL.Database.openPagedWritable(hostIo(targetImage));
-    var targetName = "sqljs-paged-" + target.pagedFileId;
+    var attacker = SQL.Database.openPagedWritable(hostIo(attackerImage));
+    var targetName = firstPagedTargetName(assert, target);
 
     try {
         assert.throws(function attachAndWriteTarget() {
-            if (typeof target.pagedFileId === "number") {
-                attacker.exec(
-                    "ATTACH DATABASE '" + targetName + "' AS victim;"
-                    + "UPDATE victim.secrets SET value = 'stolen'"
-                );
-                return;
-            }
-            attachSyntheticTarget(
-                attacker,
-                target,
-                "writable-target",
-                function writeAttachedTarget() {
-                    attacker.exec("UPDATE victim.secrets SET value = 'stolen'");
-                }
+            attacker.exec(
+                "ATTACH DATABASE '" + targetName + "' AS victim;"
+                + "UPDATE victim.secrets SET value = 'stolen'"
             );
         }, /not authorized|authorization denied/i);
         assertNoVictimSchema(assert, attacker);
@@ -230,21 +185,23 @@ function testMemfsAttachPositiveControl(SQL, assert, image) {
     }
 }
 
-exports.test = function test(SQL, assert) {
+exports.test = async function test(SQL, assert) {
     var readOnlyAttackerImage = createImage(SQL, "read-only-attacker");
     var readOnlyTargetImage = createImage(SQL, "read-only-target");
     var writableAttackerImage = createImage(SQL, "writable-attacker");
     var writableTargetImage = createImage(SQL, "writable-target");
     var memfsTargetImage = createImage(SQL, "memfs-target");
+    var readOnlySQL = await loadFreshSql(process.argv[2]);
+    var writableSQL = await loadFreshSql(process.argv[2]);
 
     testReadOnlyAttachIsRejected(
-        SQL,
+        readOnlySQL,
         assert,
         readOnlyAttackerImage,
         readOnlyTargetImage
     );
     testWritableAttachIsRejected(
-        SQL,
+        writableSQL,
         assert,
         writableAttackerImage,
         writableTargetImage
