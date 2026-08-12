@@ -4,7 +4,7 @@
 
 **Goal:** Prevent SQL run on one host-backed paged connection from attaching and reading or modifying any other live host-backed image.
 
-**Architecture:** Install a connection-local SQLite authorizer immediately after each successful paged `sqlite3_open_v2()`. The authorizer denies every named or non-literal `SQLITE_ATTACH` while allowing only SQLite's literal-empty anonymous scratch path; the ordinary MEMFS database constructor and every non-ATTACH action remain unchanged.
+**Architecture:** Install a connection-local SQLite authorizer immediately after each successful paged `sqlite3_open_v2()`. The authorizer denies every named or non-literal direct `SQLITE_ATTACH` while allowing SQLite's literal-empty anonymous scratch path. SQLite also reparses every evaluated-empty `VACUUM INTO` target through that path after expression provenance is erased; evaluated non-empty targets remain denied. The ordinary MEMFS database constructor and every non-ATTACH action remain unchanged.
 
 **Tech Stack:** C, SQLite authorizer API, Emscripten/WebAssembly, Node.js test harness, Docker devcontainer.
 
@@ -13,13 +13,13 @@
 - Work only in `/Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation` on `agent/paged-vfs-attach-isolation`.
 - Follow `CLAUDE.md` and preserve ignored setup outputs.
 - Use the public `Database.openPaged()` and `Database.openPagedWritable()` APIs in the exploit regression; do not replace the test with a raw C stub.
-- On paged connections, allow `SQLITE_ATTACH` only when SQLite reports a non-null literal filename whose first byte is NUL. Deny every non-empty, computed, or parameterized filename. Ordinary `new SQL.Database()` connections retain ATTACH support.
+- On paged connections, allow `SQLITE_ATTACH` only when SQLite reports a non-null literal filename whose first byte is NUL. Deny every non-empty, computed, or parameterized direct ATTACH filename. Accept that an evaluated-empty `VACUUM INTO` target is internally reparsed as literal `ATTACH ''`; SQLite does not preserve its expression provenance at the authorizer boundary. Ordinary `new SQL.Database()` connections retain ATTACH support.
 - Install the authorizer before returning either handle and before writable mode executes `PRAGMA journal_mode=MEMORY`.
 - Propagate the exact non-OK return from `sqlite3_set_authorizer()` and preserve the existing open-handle error semantics.
 - Add no JS allocation, host callback, file-ID randomization, page-read check, or IPC operation.
-- Preserve ordinary writable `VACUUM`, which internally uses literal `ATTACH ''`. Keep `VACUUM INTO` denied because its destination is non-empty.
+- Preserve ordinary writable `VACUUM`, which internally uses literal `ATTACH ''`. Allow literal, parameterized, and computed `VACUUM INTO` targets only when they evaluate to empty anonymous scratch; deny every evaluated non-empty target.
 - Build and test in `.devcontainer/Dockerfile`; the host lacks the pinned Emscripten and `sha3sum` toolchain.
-- Complete local verification before push. Open a normal ready-for-review PR, never a draft PR.
+- Complete local verification and the final report without pushing or opening a PR.
 
 ---
 
@@ -89,16 +89,13 @@
 - Modify: `test/test_paged_vfs_isolation.js`
 - Modify: `src/vfs.c:480-585`
 
-- [ ] **Step 1: Add the literal-empty scratch boundary regression**
+- [ ] **Step 1: Add the ATTACH and VACUUM INTO boundary matrices**
 
-  Through both public paged APIs, execute literal `ATTACH DATABASE '' AS scratch` and then detach it. On read-only `openPaged()`, query `scratch.sqlite_schema` to prove the anonymous database is attached while preserving the connection's existing inability to create tables. On `openPagedWritable()`, create and query a scratch-only sentinel table, then assert ordinary `VACUUM` completes and preserves the main sentinel. Assert each of these remains rejected with an authorization error and leaves no attached schema:
+  Through both public paged APIs, execute literal `ATTACH DATABASE '' AS scratch` and then detach it. On read-only `openPaged()`, query `scratch.sqlite_schema` to prove the anonymous database is attached while preserving the connection's existing inability to create tables. On `openPagedWritable()`, create and query a scratch-only sentinel table, then assert ordinary `VACUUM` completes and preserves the main sentinel. Direct ATTACH must deny parameterized and computed empty targets plus literal, parameterized, and computed non-empty targets, including `:memory:`, file URI/path, and `sqljs-paged-*` names, without leaving an attached schema.
 
-  ```js
-  db.run("ATTACH DATABASE ? AS dynamic_scratch", [""]);
-  db.exec("ATTACH DATABASE ':memory:' AS named_memory");
-  db.exec("ATTACH DATABASE 'file:other.db' AS named_file");
-  db.exec("VACUUM INTO 'blocked-vacuum.db'");
-  ```
+  On a writable paged connection, exercise `VACUUM INTO` with literal, parameterized, and computed expressions. Every empty result must succeed as anonymous scratch; every non-empty result must be denied. After every case, assert no residual schema and an unchanged main sentinel.
+
+  Around the denied read-only `ATTACH; SELECT` chain, snapshot the target host's `size` and `read` callback counters and require zero deltas. Around the writable cross-target `ATTACH; UPDATE`, require zero target callback deltas and byte-for-byte unchanged `exportPagedWritableOverlay()` state.
 
   The existing `sqljs-paged-1` read/write exploit assertions remain the primary security regression.
 
@@ -128,7 +125,7 @@
   }
   ```
 
-  The non-null requirement denies computed and parameterized filenames, for which SQLite does not provide a literal authorizer argument. The first-byte test allows only the literal empty filename used for anonymous scratch/VACUUM.
+  The non-null requirement denies computed and parameterized direct ATTACH filenames, for which SQLite does not provide a literal authorizer argument. The first-byte test allows only the literal empty filename used for anonymous scratch/VACUUM. Evaluated-empty VACUUM INTO targets are internally reparsed as that same literal-empty path after their provenance has been erased.
 
 - [ ] **Step 4: Install it in the read-only open path**
 
@@ -170,20 +167,22 @@
 
 ---
 
-### Task 3: Verify every shipped flavor and prepare publication
+### Task 3: Verify the six supported Node lanes and browser-debug artifact
 
 **Files:**
 
 - Verify: `dist/`
 - Verify: repository worktree and commit history
 
-- [ ] **Step 1: Run the complete Docker-backed test matrix**
+- [ ] **Step 1: Run the complete Docker-backed Node test matrix**
 
   ```bash
   docker run --rm -v /Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation:/work -w /work sqljs-paged-vfs-security bash -lc 'npm ci && npm test'
   ```
 
   Expected: lint plus asm, asm-debug, wasm, wasm-debug, wasm-browser, and asm-memory-growth all pass.
+
+  Assess whether the repository provides a real-browser lane for `sql-wasm-browser-debug`. If none exists, do not claim its wrapper was host-tested: hash-compare `sql-wasm-browser-debug.wasm` with the tested `sql-wasm-debug.wasm` and explicitly record real-browser wrapper coverage as unrun.
 
 - [ ] **Step 2: Confirm scope and clean state**
 
@@ -195,6 +194,6 @@
 
   Only the approved design, plan, regression, and `src/vfs.c` implementation may be tracked.
 
-- [ ] **Step 3: Push and open a normal PR only after local verification**
+- [ ] **Step 3: Stop after the authorized local commit and report**
 
-  Push `agent/paged-vfs-attach-isolation`, then create a non-draft PR targeting `master`. Its body must contain Problem, Solution, Architecture, Per-file Changes, Security, and Test Plan, including the concrete cross-database read/write attack path and full Docker results.
+  Commit only the approved tracked documentation and test hardening. Do not push `agent/paged-vfs-attach-isolation` or create a pull request in this wave. The final report must contain exact commands, counts, hashes, deferred runner/dependency items, scope audit, self-review, commit SHA, and concerns.
