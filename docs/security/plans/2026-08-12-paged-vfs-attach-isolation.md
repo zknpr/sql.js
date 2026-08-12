@@ -91,7 +91,7 @@
 
 - [ ] **Step 1: Add the literal-empty scratch boundary regression**
 
-  Through both public paged APIs, execute literal `ATTACH DATABASE '' AS scratch`, create and query a scratch-only sentinel table, then detach it. On a writable paged database, also assert ordinary `VACUUM` completes and preserves the main sentinel. Assert each of these remains rejected with an authorization error and leaves no attached schema:
+  Through both public paged APIs, execute literal `ATTACH DATABASE '' AS scratch` and then detach it. On read-only `openPaged()`, query `scratch.sqlite_schema` to prove the anonymous database is attached while preserving the connection's existing inability to create tables. On `openPagedWritable()`, create and query a scratch-only sentinel table, then assert ordinary `VACUUM` completes and preserves the main sentinel. Assert each of these remains rejected with an authorization error and leaves no attached schema:
 
   ```js
   db.run("ATTACH DATABASE ? AS dynamic_scratch", [""]);
