@@ -10,7 +10,8 @@
 
 ## Global Constraints
 
-- Work only in `/Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation` on `agent/paged-vfs-attach-isolation`.
+- Work only in the dedicated worktree for
+  `agent/paged-vfs-attach-isolation`; run commands from its root.
 - Follow `CLAUDE.md` and preserve ignored setup outputs.
 - Use the public `Database.openPaged()` and `Database.openPagedWritable()` APIs in the exploit regression; do not replace the test with a raw C stub.
 - On paged connections, allow `SQLITE_ATTACH` only when SQLite reports a non-null literal filename whose first byte is NUL. Deny every non-empty, computed, or parameterized direct ATTACH filename. Accept that an evaluated-empty `VACUUM INTO` target is internally reparsed as literal `ATTACH ''`; SQLite does not preserve its expression provenance at the authorizer boundary. Ordinary `new SQL.Database()` connections retain ATTACH support.
@@ -145,7 +146,7 @@
 
   ```bash
   docker build -t sqljs-paged-vfs-security -f .devcontainer/Dockerfile .
-  docker run --rm -v /Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation:/work -w /work sqljs-paged-vfs-security bash -lc '. /emsdk/emsdk_env.sh && npm ci && make clean && make'
+  docker run --rm -v "$(pwd)":/work -w /work sqljs-paged-vfs-security bash -lc '. /emsdk/emsdk_env.sh && npm ci && make clean && make'
   ```
 
 - [ ] **Step 7: Run focused GREEN checks**
@@ -177,7 +178,7 @@
 - [ ] **Step 1: Run the complete Docker-backed Node test matrix**
 
   ```bash
-  docker run --rm -v /Users/zero/dev/.codex-worktrees/sql.js/paged-vfs-attach-isolation:/work -w /work sqljs-paged-vfs-security bash -lc 'npm ci && npm test'
+  docker run --rm -v "$(pwd)":/work -w /work sqljs-paged-vfs-security bash -lc 'npm ci && npm test'
   ```
 
   Expected: lint plus asm, asm-debug, wasm, wasm-debug, wasm-browser, and asm-memory-growth all pass.

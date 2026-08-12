@@ -137,12 +137,16 @@ function testReadOnlyAttachIsRejected(SQL, assert, attackerImage, targetImage) {
     try {
         assertOwnSentinel(assert, attacker, "read-only-attacker");
         assertTemporaryTable(assert, attacker);
-        assertAuthorizationDenied(assert, attacker, function attachReadOnlyTarget() {
-            attacker.exec(
-                "ATTACH DATABASE '" + targetName + "' AS victim;"
-                + "SELECT value FROM victim.secrets"
-            );
-        });
+        assertAuthorizationDenied(
+            assert,
+            attacker,
+            function attachReadOnlyTarget() {
+                attacker.exec(
+                    "ATTACH DATABASE '" + targetName + "' AS victim;"
+                    + "SELECT value FROM victim.secrets"
+                );
+            }
+        );
         assertNoHostIoDelta(
             assert,
             targetIo,
@@ -165,12 +169,16 @@ function testWritableAttachIsRejected(SQL, assert, attackerImage, targetImage) {
     var targetOverlayBeforeAttack = target.exportPagedWritableOverlay();
 
     try {
-        assertAuthorizationDenied(assert, attacker, function attachAndWriteTarget() {
-            attacker.exec(
-                "ATTACH DATABASE '" + targetName + "' AS victim;"
-                + "UPDATE victim.secrets SET value = 'stolen'"
-            );
-        });
+        assertAuthorizationDenied(
+            assert,
+            attacker,
+            function attachAndWriteTarget() {
+                attacker.exec(
+                    "ATTACH DATABASE '" + targetName + "' AS victim;"
+                    + "UPDATE victim.secrets SET value = 'stolen'"
+                );
+            }
+        );
         assertNoHostIoDelta(
             assert,
             targetIo,
