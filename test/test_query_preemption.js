@@ -14,6 +14,7 @@ function tableFunction() {
 exports.test = function testQueryPreemption(SQL, assert) {
     var db = new SQL.Database();
     var progressCalls = 0;
+    var stackBeforeQuery;
 
     db.progress_handler(100, function onProgress() {
         progressCalls += 1;
@@ -30,9 +31,12 @@ exports.test = function testQueryPreemption(SQL, assert) {
         progressCalls += 1;
         return progressCalls >= 5;
     });
+    stackBeforeQuery = SQL.stackSave();
     assert.throws(function runInterruptedQuery() {
         db.exec(LONG_QUERY);
     }, /interrupted/, "truthy progress callback interrupts the statement");
+    assert.strictEqual(SQL.stackSave(), stackBeforeQuery,
+        "callback cancellation restores the exec stack");
 
     progressCalls = 0;
     db.progress_handler(1, function countProgress() {
@@ -51,16 +55,22 @@ exports.test = function testQueryPreemption(SQL, assert) {
         db.interrupt();
         return false;
     });
+    stackBeforeQuery = SQL.stackSave();
     assert.throws(function runExplicitlyInterruptedQuery() {
         db.exec(LONG_QUERY);
     }, /interrupted/, "interrupt aborts the running statement");
+    assert.strictEqual(SQL.stackSave(), stackBeforeQuery,
+        "explicit cancellation restores the exec stack");
 
     db.progress_handler(100, function throwingCallback() {
         throw new Error("callback failure");
     });
+    stackBeforeQuery = SQL.stackSave();
     assert.throws(function runThrowingCallbackQuery() {
         db.exec(LONG_QUERY);
     }, /interrupted/, "a throwing progress callback interrupts the statement");
+    assert.strictEqual(SQL.stackSave(), stackBeforeQuery,
+        "throwing progress callbacks restore the exec stack");
 
     progressCalls = 0;
     db.progress_handler(1, function progressAlongsideFunction() {
