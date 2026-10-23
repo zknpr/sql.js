@@ -11,7 +11,7 @@
     stackRestore
     stackSave
     UTF8ToString
-    lengthBytesUTF8
+    stringToUTF8
     stringToNewUTF8
     removeFunction
     addFunction
@@ -205,7 +205,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     var sqlite3_result_text = cwrap(
         "sqlite3_result_text",
         "",
-        ["number", "string", "number", "number"]
+        ["number", "number", "number", "number"]
     );
     var sqlite3_result_blob = cwrap(
         "sqlite3_result_blob",
@@ -277,6 +277,42 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "number",
         ["number", "number"]
     );
+
+    // Copy a string into a new heap buffer as UTF-8, encoded exactly as
+    // stringToUTF8 writes it, and return its pointer and byte length.
+    // lengthBytesUTF8 cannot provide the length: it counts a lone surrogate
+    // as the first half of a pair (4 bytes, skipping the next code unit),
+    // while stringToUTF8 writes it as 3 bytes, so a value bound with that
+    // count gains the terminator or loses its end.
+    function newUTF8Text(string) {
+        var size = 0;
+        for (var i = 0; i < string.length; i += 1) {
+            var codePoint = string.codePointAt(i);
+            if (codePoint <= 0x7F) {
+                size += 1;
+            } else if (codePoint <= 0x7FF) {
+                size += 2;
+            } else if (codePoint <= 0xFFFF) {
+                size += 3;
+            } else {
+                size += 4;
+                i += 1;
+            }
+        }
+        var ptr = _malloc(size + 1);
+        if (!ptr) {
+            throw new Error("Out of memory while copying a string");
+        }
+        var written = stringToUTF8(string, ptr, size + 1);
+        if (written !== size) {
+            _free(ptr);
+            throw new Error(
+                "UTF-8 length mismatch: counted " + size
+                + " bytes, wrote " + written
+            );
+        }
+        return { ptr: ptr, size: size };
+    }
 
     /**
     * @classdesc
@@ -589,13 +625,13 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             pos = this.pos;
             this.pos += 1;
         }
-        var strptr = stringToNewUTF8(string);
-        this.allocatedmem.push(strptr);
+        var text = newUTF8Text(string);
+        this.allocatedmem.push(text.ptr);
         this.db.handleError(sqlite3_bind_text(
             this.stmt,
             pos,
-            strptr,
-            lengthBytesUTF8(string),
+            text.ptr,
+            text.size,
             0
         ));
         return true;
@@ -1350,7 +1386,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
                 sqlite3_result_double(cx, result);
                 break;
             case "string":
-                sqlite3_result_text(cx, result, lengthBytesUTF8(result), -1);
+                var text = newUTF8Text(result);
+                // -1 is SQLITE_TRANSIENT: SQLite copies the text first.
+                sqlite3_result_text(cx, text.ptr, text.size, -1);
+                _free(text.ptr);
                 break;
             case "object":
                 if (result === null) {

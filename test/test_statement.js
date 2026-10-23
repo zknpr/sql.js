@@ -82,6 +82,24 @@ exports.test = function(sql, assert){
     );
     stmt.free();
 
+    // A lone surrogate is stored as its 3-byte encoding, with nothing
+    // appended and nothing after it lost.
+    stmt = db.prepare("SELECT hex(CAST(? AS BLOB))");
+    [
+        ["x\uD800", "78EDA080"],
+        ["tweet \uD83D", "747765657420EDA0BD"],
+        ["\uD83D中文", "EDA0BDE4B8ADE69687"],
+        ["\uDE00a", "EDB88061"],
+        ["ok 😀", "6F6B20F09F9880"]
+    ].forEach(function (testCase) {
+        assert.strictEqual(
+            stmt.get([testCase[0]])[0],
+            testCase[1],
+            "Binding TEXT with lone surrogates stores " + testCase[1]
+        );
+    });
+    stmt.free();
+
     // Prepare an sql statement
     stmt = db.prepare("SELECT * FROM alphabet WHERE code BETWEEN :start AND :end ORDER BY code");
     // Bind values to the parameters

@@ -74,6 +74,16 @@ exports.test = function(SQL, assert){
     "TEXT results from JavaScript functions preserve embedded NUL"
   );
 
+  db.create_function("ReturnLoneSurrogate", function () {
+    return "\uD83D中文";
+  });
+  result = db.exec("SELECT hex(CAST(ReturnLoneSurrogate() AS BLOB))");
+  assert.equal(
+    result[0]["values"][0][0],
+    "EDA0BDE4B8ADE69687",
+    "TEXT results from JavaScript functions keep a lone surrogate and what follows it"
+  );
+
   var verbose=false;
   function canHandle(testData)
   {
