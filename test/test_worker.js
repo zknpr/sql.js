@@ -134,11 +134,44 @@ exports.test = async function test(SQL, assert) {
   for (let i = 0; i < header.length; i++) actual += String.fromCharCode(data.buffer[i]);
   assert.equal(actual, header, 'Data returned is an SQLite database file');
 
+  // Closing returns the worker to its initial, lazily initialized state.
+  await worker.postMessage({ action: "close" });
+  await worker.postMessage({ action: "close" });
+  data = await worker.postMessage({
+    action: "exec",
+    sql: "SELECT count(*) AS count FROM sqlite_master WHERE name = 'test'"
+  });
+  assert.deepEqual(data.results, [{ columns: ['count'], values: [[0]] }],
+    'exec after close creates a fresh database');
+  await worker.postMessage({ action: "close" });
+  data = await worker.postMessage({ action: "each", sql: "SELECT 7 AS value" });
+  assert.deepEqual(data.row, { value: 7 },
+    'each after close creates a fresh database');
+
   // test worker properly opens db after closing
   await worker.postMessage({ action: "close" });
   await worker.postMessage({ action: "open" });
   data = await worker.postMessage({ action: "exec", sql: "SELECT 1" });
   assert.deepEqual(data.results, [{"columns":["1"],"values":[[1]]}]);
+  data = await worker.postMessage({ action: "exec", sql: "SELECT log(100), log(2, 8)" });
+  assert.deepEqual(data.results[0].values, [[Math.log(100), 3]],
+    'Workers default to legacy overrides with native-only arities');
+  await worker.worker.terminate();
+
+  const nativeWorker = await SQLWorker.fromFile(path.join(__dirname, filename));
+  try {
+    await nativeWorker.postMessage({
+      action: 'open', config: { useOldExtensionFunctions: false }
+    });
+    data = await nativeWorker.postMessage({
+      action: 'exec',
+      sql: "SELECT log(100), sign('abc'), typeof(sign(2.5))"
+    });
+    assert.deepEqual(data.results[0].values, [[2, null, 'integer']],
+      'The first worker message can select native SQLite behavior');
+  } finally {
+    await nativeWorker.worker.terminate();
+  }
 }
 
 function obj2array(obj) {

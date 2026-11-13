@@ -2,6 +2,9 @@
 "_malloc",
 "_free",
 "_sqlite3_open",
+"_sqlite3_backup_init",
+"_sqlite3_backup_step",
+"_sqlite3_backup_finish",
 "_sqlite3_exec",
 "_sqlite3_free",
 "_sqlite3_errmsg",
@@ -43,5 +46,12 @@
 "_sqlite3_result_error",
 "_sqlite3_aggregate_context",
 "_RegisterExtensionFunctions",
-"_sqlite3_update_hook"
+"_sqlite3_progress_handler",
+"_sqlite3_interrupt",
+"_sqlite3_update_hook",
+"_sqlite3_get_autocommit",
+"_sqljs_vfs_register",
+"_sqljs_open_paged",
+"_sqljs_vfs_register_rw",
+"_sqljs_open_paged_rw"
 ]

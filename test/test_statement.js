@@ -35,6 +35,24 @@ exports.test = function(sql, assert){
     assert.strictEqual(res.str, '粵語😄', "Read string");
     assert.strictEqual(res.no_value, null, "Read null");
     assert.deepEqual(res, {nbr:5, str:'粵語😄', no_value:null}, "Statement.getAsObject()");
+
+    var callerOwnedNames = stmt.getColumnNames();
+    callerOwnedNames[0] = 'mutated';
+    assert.deepEqual(stmt.getColumnNames(), ['nbr','str','no_value'],
+        'Statement.getColumnNames() returns caller-owned arrays');
+    stmt.free();
+
+    db.run("CREATE TABLE shape_test (initial);"
+        + " INSERT INTO shape_test VALUES ('value')");
+    stmt = db.prepare("SELECT * FROM shape_test");
+    stmt.step();
+    assert.deepEqual(stmt.getAsObject(), {initial:'value'},
+        "Statement.getAsObject() reads the initial result shape");
+    stmt.reset();
+    db.run("ALTER TABLE shape_test ADD COLUMN added TEXT DEFAULT 'new'");
+    stmt.step();
+    assert.deepEqual(stmt.getAsObject(), {initial:'value', added:'new'},
+        "Statement.reset() invalidates result column metadata");
     stmt.free();
 
     // getColumnNames() should work even if query returns no data 
@@ -44,6 +62,43 @@ exports.test = function(sql, assert){
 
     stmt = db.prepare("SELECT str FROM data WHERE str=?");
     assert.deepEqual(stmt.getAsObject(['粵語😄']), {'str':'粵語😄'}, "UTF8 support in prepared statements");
+    stmt.free();
+
+    var nulText = "A\0漢😄";
+    stmt = db.prepare("SELECT ?");
+    assert.deepEqual(
+        stmt.get([nulText]),
+        [nulText],
+        "Binding TEXT preserves embedded NUL and multibyte UTF-8"
+    );
+    stmt.free();
+
+    stmt = db.prepare("SELECT CAST(x'410042' AS TEXT)");
+    stmt.step();
+    assert.strictEqual(
+        stmt.get()[0],
+        "A\0B",
+        "Reading TEXT preserves embedded NUL"
+    );
+    stmt.free();
+
+    // A lone surrogate is stored as its 3-byte encoding, with nothing
+    // appended and nothing after it lost.
+    stmt = db.prepare("SELECT hex(CAST(? AS BLOB))");
+    [
+        ["x\uD800", "78EDA080"],
+        ["tweet \uD83D", "747765657420EDA0BD"],
+        ["\uD83D中文", "EDA0BDE4B8ADE69687"],
+        ["\uDE00a", "EDB88061"],
+        ["ok 😀", "6F6B20F09F9880"]
+    ].forEach(function (testCase) {
+        assert.strictEqual(
+            stmt.get([testCase[0]])[0],
+            testCase[1],
+            "Binding TEXT with lone surrogates stores " + testCase[1]
+        );
+    });
+    stmt.free();
 
     // Prepare an sql statement
     stmt = db.prepare("SELECT * FROM alphabet WHERE code BETWEEN :start AND :end ORDER BY code");
@@ -96,4 +151,3 @@ if (module == require.main) {
     assert.fail(e);
   });
 }
-

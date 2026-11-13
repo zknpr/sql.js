@@ -10,3 +10,8 @@ tmp/
 c/
 emsdk/
 sqljs.zip
+bench/results/
+
+# Generated API documentation:
+documentation/
+!/documentation/

@@ -1,4 +1,4 @@
-# Note: Last built with version 2.0.15 of Emscripten
+# Compiler version is pinned in .devcontainer/Dockerfile.
 
 # TODO: Emit a file showing which version of emcc and SQLite was used to compile the emitted output.
 # TODO: Create a release on Github with these compiled assets rather than checking them in
@@ -6,9 +6,9 @@
 
 # I got this handy makefile syntax from : https://github.com/mandel59/sqlite-wasm (MIT License) Credited in LICENSE
 # To use another version of Sqlite, visit https://www.sqlite.org/download.html and copy the appropriate values here:
-SQLITE_AMALGAMATION = sqlite-amalgamation-3490100
-SQLITE_AMALGAMATION_ZIP_URL = https://sqlite.org/2025/sqlite-amalgamation-3490100.zip
-SQLITE_AMALGAMATION_ZIP_SHA3 = e7eb4cfb2d95626e782cfa748f534c74482f2c3c93f13ee828b9187ce05b2da7
+SQLITE_AMALGAMATION = sqlite-amalgamation-3540100
+SQLITE_AMALGAMATION_ZIP_URL = https://sqlite.org/2026/sqlite-amalgamation-3540100.zip
+SQLITE_AMALGAMATION_ZIP_SHA3 = 92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
 
 # Note that extension-functions.c hasn't been updated since 2010-02-06, so likely doesn't need to be updated
 EXTENSION_FUNCTIONS = extension-functions.c
@@ -17,24 +17,42 @@ EXTENSION_FUNCTIONS_SHA1 = c68fa706d6d9ff98608044c00212473f9c14892f
 
 EMCC=emcc
 
+# Keep the compile and link optimization level in sync. LTO stages are separate
+# to preserve and measure the old link-only policy. Make does not track
+# command-line variable changes, so clean before comparing variants.
+OPTIMIZATION ?= -Oz
+COMPILE_LTO_FLAGS ?=
+LINK_LTO_FLAGS ?= -flto
+CLOSURE ?= 1
+SQLITE_PERFORMANCE_FLAGS ?= -DSQLITE_LIKE_DOESNT_MATCH_BLOBS
+SQLITE_EXTRA_FLAGS ?=
+
 SQLITE_COMPILATION_FLAGS = \
-	-Oz \
+	$(OPTIMIZATION) \
+	$(COMPILE_LTO_FLAGS) \
 	-DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_DISABLE_LFS \
 	-DSQLITE_ENABLE_FTS3 \
 	-DSQLITE_ENABLE_FTS3_PARENTHESIS \
+	-DSQLITE_ENABLE_FTS5 \
+	-DSQLITE_ENABLE_MATH_FUNCTIONS \
 	-DSQLITE_THREADSAFE=0 \
-	-DSQLITE_ENABLE_NORMALIZE
+	-DSQLITE_ENABLE_NORMALIZE \
+	$(SQLITE_PERFORMANCE_FLAGS) \
+	$(SQLITE_EXTRA_FLAGS)
 
-# When compiling to WASM, enabling memory-growth is not expected to make much of an impact, so we enable it for all builds
-# Since tihs is a library and not a standalone executable, we don't want to catch unhandled Node process exceptions
+# SQLite Explorer accepts files up to 200MB, so WASM must grow beyond its
+# initial heap instead of reserving a desktop-sized heap in every browser.
+# Since this is a library and not a standalone executable, we don't want to catch unhandled Node process exceptions
 # So, we do : `NODEJS_CATCH_EXIT=0`, which fixes issue: https://github.com/sql-js/sql.js/issues/173 and https://github.com/sql-js/sql.js/issues/262
+# Preserve supported module inputs from Emscripten 5, including wasmBinary
+# (no longer enabled by default in Emscripten 6). Pin the new runtime floor.
 EMFLAGS = \
-	-s RESERVED_FUNCTION_POINTERS=64 \
+	-s INCOMING_MODULE_JS_API=@src/incoming_module_api.json \
+	-s MIN_NODE_VERSION=180300 \
 	-s ALLOW_TABLE_GROWTH=1 \
 	-s EXPORTED_FUNCTIONS=@src/exported_functions.json \
 	-s EXPORTED_RUNTIME_METHODS=@src/exported_runtime_methods.json \
-	-s SINGLE_FILE=0 \
 	-s NODEJS_CATCH_EXIT=0 \
 	-s NODEJS_CATCH_REJECTION=0 \
 	-s STACK_SIZE=5MB
@@ -47,24 +65,25 @@ EMFLAGS_ASM_MEMORY_GROWTH = \
 	-s ALLOW_MEMORY_GROWTH=1
 
 EMFLAGS_WASM = \
-	-s WASM=1 \
 	-s ALLOW_MEMORY_GROWTH=1
 
+# Base64 embedding works even when a page does not declare UTF-8 encoding.
+EMFLAGS_WASM_INLINE = $(EMFLAGS_WASM) -s SINGLE_FILE=1 -s SINGLE_FILE_BINARY_ENCODE=0
+
 EMFLAGS_WASM_BROWSER = \
-	-s WASM=1 \
 	-s ALLOW_MEMORY_GROWTH=1 \
 	-s ENVIRONMENT=web,worker
 
 EMFLAGS_OPTIMIZED= \
-	-Oz \
-	-flto \
-	--closure 1
+	$(OPTIMIZATION) \
+	$(LINK_LTO_FLAGS) \
+	--closure $(CLOSURE)
 
 EMFLAGS_DEBUG = \
 	-s ASSERTIONS=2 \
 	-O1
 
-BITCODE_FILES = out/sqlite3.o out/extension-functions.o
+BITCODE_FILES = out/sqlite3.o out/extension-functions.o out/vfs.o
 
 OUTPUT_WRAPPER_FILES = src/shell-pre.js src/shell-post.js
 
@@ -73,61 +92,73 @@ SOURCE_API_FILES = src/api.js
 EMFLAGS_PRE_JS_FILES = \
 	--pre-js src/api.js
 
-EXPORTED_METHODS_JSON_FILES = src/exported_functions.json src/exported_runtime_methods.json
+MODULE_API_JSON_FILES = src/exported_functions.json src/exported_runtime_methods.json src/incoming_module_api.json
 
 all: optimized debug worker
 
 .PHONY: debug
-debug: dist/sql-asm-debug.js dist/sql-wasm-debug.js dist/sql-wasm-browser-debug.js
+debug: dist/sql-asm-debug.js dist/sql-wasm-debug.js dist/sql-wasm-browser-debug.js dist/sql-wasm-inline-debug.js
 
-dist/sql-asm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
+dist/sql-asm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) src/asm-deprecation.js
 	$(EMCC) $(EMFLAGS) $(EMFLAGS_DEBUG) $(EMFLAGS_ASM) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
-	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
+	cat src/shell-pre.js src/asm-deprecation.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-dist/sql-wasm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
+dist/sql-wasm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
 	$(EMCC) $(EMFLAGS) $(EMFLAGS_DEBUG) $(EMFLAGS_WASM) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-dist/sql-wasm-browser-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
+dist/sql-wasm-browser-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
 	$(EMCC) $(EMFLAGS) $(EMFLAGS_DEBUG) $(EMFLAGS_WASM_BROWSER) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-.PHONY: optimized
-optimized: dist/sql-asm.js dist/sql-wasm.js dist/sql-wasm-browser.js dist/sql-asm-memory-growth.js
-
-dist/sql-asm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
-	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_ASM) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
+dist/sql-wasm-inline-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
+	$(EMCC) $(EMFLAGS) $(EMFLAGS_DEBUG) $(EMFLAGS_WASM_INLINE) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-dist/sql-wasm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
+.PHONY: optimized
+optimized: dist/sql-asm.js dist/sql-wasm.js dist/sql-wasm-browser.js dist/sql-wasm-inline.js dist/sql-asm-memory-growth.js
+
+dist/sql-asm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) src/asm-deprecation.js
+	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_ASM) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
+	mv $@ out/tmp-raw.js
+	cat src/shell-pre.js src/asm-deprecation.js out/tmp-raw.js src/shell-post.js > $@
+	rm out/tmp-raw.js
+
+dist/sql-wasm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
 	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_WASM) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-dist/sql-wasm-browser.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
+dist/sql-wasm-browser.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
 	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_WASM_BROWSER) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
-dist/sql-asm-memory-growth.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(EXPORTED_METHODS_JSON_FILES)
-	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_ASM_MEMORY_GROWTH) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
+dist/sql-wasm-inline.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) Makefile
+	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_WASM_INLINE) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
 	mv $@ out/tmp-raw.js
 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js > $@
 	rm out/tmp-raw.js
 
+dist/sql-asm-memory-growth.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) $(SOURCE_API_FILES) $(MODULE_API_JSON_FILES) src/asm-deprecation.js
+	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) $(EMFLAGS_ASM_MEMORY_GROWTH) $(BITCODE_FILES) $(EMFLAGS_PRE_JS_FILES) -o $@
+	mv $@ out/tmp-raw.js
+	cat src/shell-pre.js src/asm-deprecation.js out/tmp-raw.js src/shell-post.js > $@
+	rm out/tmp-raw.js
+
 # Web worker API
 .PHONY: worker
-worker: dist/worker.sql-asm.js dist/worker.sql-asm-debug.js dist/worker.sql-wasm.js dist/worker.sql-wasm-debug.js
+worker: dist/worker.sql-asm.js dist/worker.sql-asm-debug.js dist/worker.sql-wasm.js dist/worker.sql-wasm-debug.js dist/worker.sql-wasm-inline.js dist/worker.sql-wasm-inline-debug.js
 
 dist/worker.sql-asm.js: dist/sql-asm.js src/worker.js
 	cat $^ > $@
@@ -141,34 +172,48 @@ dist/worker.sql-wasm.js: dist/sql-wasm.js src/worker.js
 dist/worker.sql-wasm-debug.js: dist/sql-wasm-debug.js src/worker.js
 	cat $^ > $@
 
+dist/worker.sql-wasm-inline.js: dist/sql-wasm-inline.js src/worker.js
+	cat $^ > $@
+
+dist/worker.sql-wasm-inline-debug.js: dist/sql-wasm-inline-debug.js src/worker.js
+	cat $^ > $@
+
 # Building it this way gets us a wrapper that _knows_ it's in worker mode, which is nice.
 # However, since we can't tell emcc that we don't need the wasm generated, and just want the wrapper, we have to pay to have the .wasm generated
 # even though we would have already generated it with our sql-wasm.js target above.
 # This would be made easier if this is implemented: https://github.com/emscripten-core/emscripten/issues/8506
-# dist/worker.sql-wasm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) src/api.js src/worker.js $(EXPORTED_METHODS_JSON_FILES) dist/sql-wasm-debug.wasm
+# dist/worker.sql-wasm.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) src/api.js src/worker.js $(MODULE_API_JSON_FILES) dist/sql-wasm-debug.wasm
 # 	$(EMCC) $(EMFLAGS) $(EMFLAGS_OPTIMIZED) -s ENVIRONMENT=worker -s $(EMFLAGS_WASM) $(BITCODE_FILES) --pre-js src/api.js -o out/sql-wasm.js
 # 	mv out/sql-wasm.js out/tmp-raw.js
 # 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js src/worker.js > $@
 # 	#mv out/sql-wasm.wasm dist/sql-wasm.wasm
 # 	rm out/tmp-raw.js
 
-# dist/worker.sql-wasm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) src/api.js src/worker.js $(EXPORTED_METHODS_JSON_FILES) dist/sql-wasm-debug.wasm
+# dist/worker.sql-wasm-debug.js: $(BITCODE_FILES) $(OUTPUT_WRAPPER_FILES) src/api.js src/worker.js $(MODULE_API_JSON_FILES) dist/sql-wasm-debug.wasm
 # 	$(EMCC) -s ENVIRONMENT=worker $(EMFLAGS) $(EMFLAGS_DEBUG) -s ENVIRONMENT=worker -s WASM_BINARY_FILE=sql-wasm-foo.debug $(EMFLAGS_WASM) $(BITCODE_FILES) --pre-js src/api.js -o out/sql-wasm-debug.js
 # 	mv out/sql-wasm-debug.js out/tmp-raw.js
 # 	cat src/shell-pre.js out/tmp-raw.js src/shell-post.js src/worker.js > $@
 # 	#mv out/sql-wasm-debug.wasm dist/sql-wasm-debug.wasm
 # 	rm out/tmp-raw.js
 
-out/sqlite3.o: sqlite-src/$(SQLITE_AMALGAMATION)
+out/sqlite3.o: sqlite-src/$(SQLITE_AMALGAMATION) Makefile
 	mkdir -p out
 	# Generate llvm bitcode
 	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -c sqlite-src/$(SQLITE_AMALGAMATION)/sqlite3.c -o $@
 
 # Since the extension-functions.c includes other headers in the sqlite_amalgamation, we declare that this depends on more than just extension-functions.c
-out/extension-functions.o: sqlite-src/$(SQLITE_AMALGAMATION)
+out/extension-functions.o: sqlite-src/$(SQLITE_AMALGAMATION) src/legacy-functions.c Makefile
 	mkdir -p out
 	# Generate llvm bitcode
-	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -c sqlite-src/$(SQLITE_AMALGAMATION)/extension-functions.c -o $@
+	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -I sqlite-src/$(SQLITE_AMALGAMATION) -c src/legacy-functions.c -o $@
+
+# vfs.c is first-party source (it lives in src/, not cache/), so unlike the
+# downloaded sqlite3/extension-functions sources it needs no checksum step;
+# it only needs the amalgamation present for sqlite3.h.
+out/vfs.o: src/vfs.c sqlite-src/$(SQLITE_AMALGAMATION)
+	mkdir -p out
+	# Generate llvm bitcode
+	$(EMCC) $(SQLITE_COMPILATION_FLAGS) -Isqlite-src/$(SQLITE_AMALGAMATION) -c src/vfs.c -o $@
 
 # TODO: This target appears to be unused. If we re-instatate it, we'll need to add more files inside of the JS folder
 # module.tar.gz: test package.json AUTHORS README.md dist/sql-asm.js
@@ -177,11 +222,11 @@ out/extension-functions.o: sqlite-src/$(SQLITE_AMALGAMATION)
 ## cache
 cache/$(SQLITE_AMALGAMATION).zip:
 	mkdir -p cache
-	curl -LsSf '$(SQLITE_AMALGAMATION_ZIP_URL)' -o $@
+	curl -LsSf --retry 5 --retry-delay 2 '$(SQLITE_AMALGAMATION_ZIP_URL)' -o $@
 
 cache/$(EXTENSION_FUNCTIONS):
 	mkdir -p cache
-	curl -LsSf '$(EXTENSION_FUNCTIONS_URL)' -o $@
+	curl -LsSf --retry 5 --retry-delay 2 '$(EXTENSION_FUNCTIONS_URL)' -o $@
 
 ## sqlite-src
 .PHONY: sqlite-src

@@ -53,6 +53,37 @@ exports.test = function(SQL, assert){
  
   // Test api support of different sqlite types and special values
   db.create_function("identityFunction", function (x) { return x;} );
+
+  var capturedText;
+  db.create_function("CaptureEmbeddedNul", function (x) {
+    capturedText = x;
+    return 1;
+  });
+  db.exec("SELECT CaptureEmbeddedNul(CAST(x'410042' AS TEXT));");
+  assert.equal(
+    capturedText,
+    "A\0B",
+    "TEXT arguments to JavaScript functions preserve embedded NUL"
+  );
+
+  db.create_function("ReturnEmbeddedNul", function () { return "A\0B"; });
+  result = db.exec("SELECT ReturnEmbeddedNul()");
+  assert.equal(
+    result[0]["values"][0][0],
+    "A\0B",
+    "TEXT results from JavaScript functions preserve embedded NUL"
+  );
+
+  db.create_function("ReturnLoneSurrogate", function () {
+    return "\uD83D中文";
+  });
+  result = db.exec("SELECT hex(CAST(ReturnLoneSurrogate() AS BLOB))");
+  assert.equal(
+    result[0]["values"][0][0],
+    "EDA0BDE4B8ADE69687",
+    "TEXT results from JavaScript functions keep a lone surrogate and what follows it"
+  );
+
   var verbose=false;
   function canHandle(testData)
   {
@@ -128,7 +159,11 @@ exports.test = function(SQL, assert){
    
   db.create_function("throwFunction", function () { throw "internal exception"; return 5;} );    
   assert.throws(function(){db.exec("SELECT throwFunction()");},/internal exception/, "Can handle internal exceptions");
-  
+
+  db.create_function("throwErrorFunction", function () { throw new Error("internal error object"); });
+  assert.throws(function(){db.exec("SELECT throwErrorFunction()");},/internal error object/, "Reports the message of a thrown Error");
+  assert.equal(db.exec("SELECT addOne(1);")[0]["values"][0][0], 2, "Functions work after an Error has been thrown");
+
   db.create_function("customeObjectFunction", function () { return {test:123};} );    
   assert.throws(function(){db.exec("SELECT customeObjectFunction()");},/Wrong API use/, "Reports wrong API use");
 

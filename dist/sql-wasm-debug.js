@@ -75,41 +75,46 @@ var initSqlJs = function (moduleConfig) {
   // "30.0.0" -> 300000
   function humanReadableVersionToPacked(str) {
     str = str.split('-')[0]; // Remove any trailing part from e.g. "12.53.3-alpha"
-    var vers = str.split('.').slice(0, 3);
+    let vers = str.split('.').slice(0, 3);
     while(vers.length < 3) vers.push('00');
     vers = vers.map((n, i, arr) => n.padStart(2, '0'));
     return vers.join('');
   }
   // 300000 -> "30.0.0"
-  var packedVersionToHumanReadable = n => [n / 10000 | 0, (n / 100 | 0) % 100, n % 100].join('.');
+  const packedVersionToHumanReadable = n => [n / 10_000 | 0, (n / 100 | 0) % 100, n % 100].join('.');
 
-  var TARGET_NOT_SUPPORTED = 2147483647;
+  const TARGET_NOT_SUPPORTED = 2147483647;
 
   // Note: We use a typeof check here instead of optional chaining using
   // globalThis because older browsers might not have globalThis defined.
-  var currentNodeVersion = typeof process !== 'undefined' && process.versions?.node ? humanReadableVersionToPacked(process.versions.node) : TARGET_NOT_SUPPORTED;
-  if (currentNodeVersion < 160000) {
-    throw new Error(`This emscripten-generated code requires node v${ packedVersionToHumanReadable(160000) } (detected v${packedVersionToHumanReadable(currentNodeVersion)})`);
+
+  // We skip the node version checking when running on Bun/Deno since the node
+  // version they report doesn't seem to be useful.
+  if (typeof process !== 'undefined' && !process.versions?.bun && typeof Deno === "undefined") {
+    const currentNodeVersion = process.versions?.node ? humanReadableVersionToPacked(process.versions.node) : TARGET_NOT_SUPPORTED;
+    if (currentNodeVersion < 180300) {
+      throw new Error(`This emscripten-generated code requires node v${ packedVersionToHumanReadable(180300) } (detected v${packedVersionToHumanReadable(currentNodeVersion)})`);
+    }
   }
 
-  var userAgent = typeof navigator !== 'undefined' && navigator.userAgent;
+  const userAgent = typeof navigator !== 'undefined' && navigator.userAgent;
   if (!userAgent) {
     return;
   }
 
-  var currentSafariVersion = userAgent.includes("Safari/") && !userAgent.includes("Chrome/") && userAgent.match(/Version\/(\d+\.?\d*\.?\d*)/) ? humanReadableVersionToPacked(userAgent.match(/Version\/(\d+\.?\d*\.?\d*)/)[1]) : TARGET_NOT_SUPPORTED;
-  if (currentSafariVersion < 150000) {
-    throw new Error(`This emscripten-generated code requires Safari v${ packedVersionToHumanReadable(150000) } (detected v${currentSafariVersion})`);
+  const currentSafariVersion = userAgent.includes("Safari/") && !userAgent.includes("Chrome/") && userAgent.match(/Version\/(\d+\.?\d*\.?\d*)/) ? humanReadableVersionToPacked(userAgent.match(/Version\/(\d+\.?\d*\.?\d*)/)[1]) : TARGET_NOT_SUPPORTED;
+  if (currentSafariVersion < 150400) {
+    throw new Error(`This emscripten-generated code requires Safari v${ packedVersionToHumanReadable(150400) } (detected v${currentSafariVersion})`);
   }
 
-  var currentFirefoxVersion = userAgent.match(/Firefox\/(\d+(?:\.\d+)?)/) ? parseFloat(userAgent.match(/Firefox\/(\d+(?:\.\d+)?)/)[1]) : TARGET_NOT_SUPPORTED;
-  if (currentFirefoxVersion < 79) {
-    throw new Error(`This emscripten-generated code requires Firefox v79 (detected v${currentFirefoxVersion})`);
+  const currentFirefoxVersion = userAgent.match(/Firefox\/(\d+(?:\.\d+)?)/) ? parseFloat(userAgent.match(/Firefox\/(\d+(?:\.\d+)?)/)[1]) : TARGET_NOT_SUPPORTED;
+  if (currentFirefoxVersion < 92) {
+    throw new Error(`This emscripten-generated code requires Firefox v92 (detected v${currentFirefoxVersion})`);
   }
 
-  var currentChromeVersion = userAgent.match(/Chrome\/(\d+(?:\.\d+)?)/) ? parseFloat(userAgent.match(/Chrome\/(\d+(?:\.\d+)?)/)[1]) : TARGET_NOT_SUPPORTED;
-  if (currentChromeVersion < 85) {
-    throw new Error(`This emscripten-generated code requires Chrome v85 (detected v${currentChromeVersion})`);
+  const currentChromeVersion = userAgent.match(/Chrome\/(\d+(?:\.\d+)?)/) ? parseFloat(userAgent.match(/Chrome\/(\d+(?:\.\d+)?)/)[1]) : TARGET_NOT_SUPPORTED;
+  if (currentChromeVersion < 93) {
+    throw new Error(`This emscripten-generated code requires Chrome v93 (detected v${currentChromeVersion})`);
   }
 })();
 
@@ -127,7 +132,7 @@ var initSqlJs = function (moduleConfig) {
 // after the generated code, you will need to define   var Module = {};
 // before the code. Then that object will be used in the code, and you
 // can continue to use Module afterwards as well.
-var Module = typeof Module != 'undefined' ? Module : {};
+var Module = typeof Module !== 'undefined' ? Module : {};
 
 // Determine the runtime environment we are in. You can customize this by
 // setting the ENVIRONMENT setting at compile time (see settings.js).
@@ -146,6 +151,7 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
 /* global
     FS
     HEAP8
+    HEAPU8
     Module
     _malloc
     _free
@@ -155,6 +161,7 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
     stackRestore
     stackSave
     UTF8ToString
+    stringToUTF8
     stringToNewUTF8
     removeFunction
     addFunction
@@ -170,9 +177,14 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
  */
 
 /**
- * @typedef {{locateFile:function(string):string}} SqlJsConfig
- * @property {function(string):string} locateFile
+ * @typedef {Object} SqlJsConfig
+ * @property {function(string):string} [locateFile]
  * a function that returns the full path to a resource given its file name
+ * @property {boolean} [useOldExtensionFunctions=true]
+ * Register deprecated extension functions for backwards compatibility.
+ * Calling a legacy function prints a deprecation warning.
+ * Set to false to use SQLite's native functions without legacy overrides.
+ * The first initialization determines this option for all databases.
  * @see https://emscripten.org/docs/api_reference/module.html
  */
 
@@ -196,6 +208,7 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
  */
 // Wait for preRun to run, and then finish our initialization
 Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
+    var useOldExtensionFunctions = Module["useOldExtensionFunctions"] !== false;
     // Declare toplevel variables
     // register, used for temporary stack values
     var apiTemp = stackAlloc(4);
@@ -204,6 +217,8 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     var NULL = 0;
     // SQLite enum
     var SQLITE_OK = 0;
+    var SQLITE_BUSY = 5;
+    var SQLITE_LOCKED = 6;
     var SQLITE_ROW = 100;
     var SQLITE_DONE = 101;
     var SQLITE_INTEGER = 1;
@@ -219,17 +234,23 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     // var - cwrap function
     var sqlite3_open = cwrap("sqlite3_open", "number", ["string", "number"]);
     var sqlite3_close_v2 = cwrap("sqlite3_close_v2", "number", ["number"]);
+    var sqlite3_backup_init = cwrap(
+        "sqlite3_backup_init",
+        "number",
+        ["number", "string", "number", "string"]
+    );
+    var sqlite3_backup_step = cwrap(
+        "sqlite3_backup_step", "number", ["number", "number"]
+    );
+    var sqlite3_backup_finish = cwrap(
+        "sqlite3_backup_finish", "number", ["number"]
+    );
     var sqlite3_exec = cwrap(
         "sqlite3_exec",
         "number",
-        ["number", "string", "number", "number", "number"]
+        ["number", "number", "number", "number", "number"]
     );
     var sqlite3_changes = cwrap("sqlite3_changes", "number", ["number"]);
-    var sqlite3_prepare_v2 = cwrap(
-        "sqlite3_prepare_v2",
-        "number",
-        ["number", "string", "number", "number", "number"]
-    );
     var sqlite3_sql = cwrap("sqlite3_sql", "string", ["number"]);
     var sqlite3_normalized_sql = cwrap(
         "sqlite3_normalized_sql",
@@ -282,7 +303,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     );
     var sqlite3_column_text = cwrap(
         "sqlite3_column_text",
-        "string",
+        "number",
         ["number", "number"]
     );
     var sqlite3_column_blob = cwrap(
@@ -333,7 +354,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "number",
         ["number"]
     );
-    var sqlite3_value_text = cwrap("sqlite3_value_text", "string", ["number"]);
+    var sqlite3_value_text = cwrap("sqlite3_value_text", "number", ["number"]);
     var sqlite3_value_blob = cwrap("sqlite3_value_blob", "number", ["number"]);
     var sqlite3_value_double = cwrap(
         "sqlite3_value_double",
@@ -353,7 +374,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     var sqlite3_result_text = cwrap(
         "sqlite3_result_text",
         "",
-        ["number", "string", "number", "number"]
+        ["number", "number", "number", "number"]
     );
     var sqlite3_result_blob = cwrap(
         "sqlite3_result_blob",
@@ -389,6 +410,78 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         "number",
         ["number", "number", "number"]
     );
+    var sqlite3_progress_handler = cwrap(
+        "sqlite3_progress_handler",
+        "",
+        ["number", "number", "number", "number"]
+    );
+    var sqlite3_interrupt = cwrap(
+        "sqlite3_interrupt",
+        "",
+        ["number"]
+    );
+    var sqlite3_get_autocommit = cwrap(
+        "sqlite3_get_autocommit",
+        "number",
+        ["number"]
+    );
+    // Paged (page-on-demand) database support, implemented in src/vfs.c
+    var sqljs_vfs_register = cwrap(
+        "sqljs_vfs_register",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_open_paged = cwrap(
+        "sqljs_open_paged",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_vfs_register_rw = cwrap(
+        "sqljs_vfs_register_rw",
+        "number",
+        ["number", "number"]
+    );
+    var sqljs_open_paged_rw = cwrap(
+        "sqljs_open_paged_rw",
+        "number",
+        ["number", "number"]
+    );
+
+    // Copy a string into a new heap buffer as UTF-8, encoded exactly as
+    // stringToUTF8 writes it, and return its pointer and byte length.
+    // lengthBytesUTF8 cannot provide the length: it counts a lone surrogate
+    // as the first half of a pair (4 bytes, skipping the next code unit),
+    // while stringToUTF8 writes it as 3 bytes, so a value bound with that
+    // count gains the terminator or loses its end.
+    function newUTF8Text(string) {
+        var size = 0;
+        for (var i = 0; i < string.length; i += 1) {
+            var codePoint = string.codePointAt(i);
+            if (codePoint <= 0x7F) {
+                size += 1;
+            } else if (codePoint <= 0x7FF) {
+                size += 2;
+            } else if (codePoint <= 0xFFFF) {
+                size += 3;
+            } else {
+                size += 4;
+                i += 1;
+            }
+        }
+        var ptr = _malloc(size + 1);
+        if (!ptr) {
+            throw new Error("Out of memory while copying a string");
+        }
+        var written = stringToUTF8(string, ptr, size + 1);
+        if (written !== size) {
+            _free(ptr);
+            throw new Error(
+                "UTF-8 length mismatch: counted " + size
+                + " bytes, wrote " + written
+            );
+        }
+        return { ptr: ptr, size: size };
+    }
 
     /**
     * @classdesc
@@ -410,7 +503,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     * Statements can't be created by the API user directly, only by
     * Database::prepare
     *
-    * @see Database.html#prepare-dynamic
+    * @see {@link Database#prepare}
     * @see https://en.wikipedia.org/wiki/Prepared_statement
     *
     * @constructs Statement
@@ -426,6 +519,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // Pointers to allocated memory, that need to be freed
         // when the statemend is destroyed
         this.allocatedmem = [];
+        // Column names are stable while stepping one execution. Avoid crossing
+        // the WASM boundary for every row materialized as an object.
+        this.columnNames = null;
+        this.activeResult = false;
     }
 
     /** @typedef {string|number|null|Uint8Array} Database.SqlValue */
@@ -494,14 +591,20 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         if (!this.stmt) {
             throw "Statement closed";
         }
+        if (!this.activeResult) {
+            this.columnNames = null;
+        }
         this.pos = 1;
         var ret = sqlite3_step(this.stmt);
         switch (ret) {
             case SQLITE_ROW:
+                this.activeResult = true;
                 return true;
             case SQLITE_DONE:
+                this.activeResult = false;
                 return false;
             default:
+                this.activeResult = false;
                 throw this.db.handleError(ret);
         }
     };
@@ -523,12 +626,11 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             pos = this.pos;
             this.pos += 1;
         }
-        var text = sqlite3_column_text(this.stmt, pos);
         if (typeof BigInt !== "function") {
             throw new Error("BigInt is not supported");
         }
         /* global BigInt */
-        return BigInt(text);
+        return BigInt(this.getString(pos));
     };
 
     Statement.prototype.getString = function getString(pos) {
@@ -536,7 +638,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             pos = this.pos;
             this.pos += 1;
         }
-        return sqlite3_column_text(this.stmt, pos);
+        var ptr = sqlite3_column_text(this.stmt, pos);
+        var size = sqlite3_column_bytes(this.stmt, pos);
+        return UTF8ToString(ptr, size, true);
     };
 
     Statement.prototype.getBlob = function getBlob(pos) {
@@ -546,11 +650,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         }
         var size = sqlite3_column_bytes(this.stmt, pos);
         var ptr = sqlite3_column_blob(this.stmt, pos);
-        var result = new Uint8Array(size);
-        for (var i = 0; i < size; i += 1) {
-            result[i] = HEAP8[ptr + i];
-        }
-        return result;
+        // slice() copies. A subarray would alias WASM memory and become stale
+        // or detached when ALLOW_MEMORY_GROWTH replaces the heap views.
+        return HEAPU8.slice(ptr, ptr + size);
     };
 
     /** Get one row of results of a statement.
@@ -569,31 +671,31 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     while (stmt.step()) console.log(stmt.get(null, {useBigInt: true}));
      */
     Statement.prototype.get = function get(params, config) {
-        config = config || {};
+        var useBigInt = config && config["useBigInt"];
         if (params != null && this.bind(params)) {
             this.step();
         }
-        var results1 = [];
         var ref = sqlite3_data_count(this.stmt);
+        var results1 = new Array(ref);
         for (var field = 0; field < ref; field += 1) {
             switch (sqlite3_column_type(this.stmt, field)) {
                 case SQLITE_INTEGER:
-                    var getfunc = config["useBigInt"]
+                    var getfunc = useBigInt
                         ? this.getBigInt(field)
                         : this.getNumber(field);
-                    results1.push(getfunc);
+                    results1[field] = getfunc;
                     break;
                 case SQLITE_FLOAT:
-                    results1.push(this.getNumber(field));
+                    results1[field] = this.getNumber(field);
                     break;
                 case SQLITE_TEXT:
-                    results1.push(this.getString(field));
+                    results1[field] = this.getString(field);
                     break;
                 case SQLITE_BLOB:
-                    results1.push(this.getBlob(field));
+                    results1[field] = this.getBlob(field);
                     break;
                 default:
-                    results1.push(null);
+                    results1[field] = null;
             }
         }
         return results1;
@@ -609,13 +711,22 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     console.log(stmt.getColumnNames());
     // Will print ['nbr','data','null_value']
      */
-    Statement.prototype.getColumnNames = function getColumnNames() {
-        var results1 = [];
-        var ref = sqlite3_column_count(this.stmt);
-        for (var i = 0; i < ref; i += 1) {
-            results1.push(sqlite3_column_name(this.stmt, i));
+    function getColumnNamesInternal(statement) {
+        if (statement.columnNames === null) {
+            statement.columnNames = [];
+            var ref = sqlite3_column_count(statement.stmt);
+            for (var i = 0; i < ref; i += 1) {
+                statement.columnNames.push(
+                    sqlite3_column_name(statement.stmt, i)
+                );
+            }
         }
-        return results1;
+        return statement.columnNames;
+    }
+
+    Statement.prototype.getColumnNames = function getColumnNames() {
+        // Preserve the public contract: callers receive an independent array.
+        return getColumnNamesInternal(this).slice();
     };
 
     /** Get one row of result as a javascript object, associating column names
@@ -636,13 +747,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
      */
     Statement.prototype.getAsObject = function getAsObject(params, config) {
         var values = this.get(params, config);
-        var names = this.getColumnNames();
-        var rowObject = {};
-        for (var i = 0; i < names.length; i += 1) {
-            var name = names[i];
-            rowObject[name] = values[i];
-        }
-        return rowObject;
+        var names = getColumnNamesInternal(this);
+        return Object.fromEntries(names.map(function columnEntry(name, i) {
+            return [name, values[i]];
+        }));
     };
 
     /** Get the SQL string used in preparing this statement.
@@ -686,13 +794,13 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             pos = this.pos;
             this.pos += 1;
         }
-        var strptr = stringToNewUTF8(string);
-        this.allocatedmem.push(strptr);
+        var text = newUTF8Text(string);
+        this.allocatedmem.push(text.ptr);
         this.db.handleError(sqlite3_bind_text(
             this.stmt,
             pos,
-            strptr,
-            -1,
+            text.ptr,
+            text.size,
             0
         ));
         return true;
@@ -805,6 +913,8 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     by bound parameters.
      */
     Statement.prototype.reset = function reset() {
+        this.columnNames = null;
+        this.activeResult = false;
         this.freemem();
         return (
             sqlite3_clear_bindings(this.stmt) === SQLITE_OK
@@ -944,6 +1054,21 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         this.sqlPtr = null;
     };
 
+    /** Free the resources held by this iterator, in case it will not be run
+     * to completion. This is called automatically when a for..of loop exits
+     * early (e.g. via break, return, or an exception), and can also be called
+     * manually.
+     @return {StatementIterator.StatementIteratorResult}
+     */
+    StatementIterator.prototype["return"] = function () {
+        if (this.activeStatement !== null) {
+            this.activeStatement.free();
+            this.activeStatement = null;
+        }
+        this.finalize();
+        return { done: true };
+    };
+
     /** Get any un-executed portions remaining of the original SQL string
      @return {String}
      */
@@ -978,12 +1103,13 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         }
         this.handleError(sqlite3_open(this.filename, apiTemp));
         this.db = getValue(apiTemp, "i32");
-        registerExtensionFunctions(this.db);
+        if (useOldExtensionFunctions) {
+            registerExtensionFunctions(this.db);
+        }
         // A list of all prepared statements of the database
         this.statements = {};
-        // A list of all user function of the database
-        // (created by create_function call)
-        this.functions = {};
+        // Callback pointers for each user function, keyed by name and arity.
+        this.functions = new Map();
     }
 
     /** Execute an SQL query, ignoring the rows it returns.
@@ -1014,7 +1140,12 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
                 stmt.free();
             }
         } else {
-            this.handleError(sqlite3_exec(this.db, sql, 0, 0, apiTemp));
+            var sqlPtr = stringToNewUTF8(sql);
+            try {
+                this.handleError(sqlite3_exec(this.db, sqlPtr, 0, 0, apiTemp));
+            } finally {
+                _free(sqlPtr);
+            }
         }
         return this;
     };
@@ -1091,6 +1222,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         if (!this.db) {
             throw "Database closed";
         }
+        var stack = stackSave();
         var stmt = null;
         var originalSqlPtr = null;
         var currentSqlPtr = null;
@@ -1138,6 +1270,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             throw errCaught;
         } finally {
             if (originalSqlPtr) _free(originalSqlPtr);
+            stackRestore(stack);
         }
     };
 
@@ -1191,10 +1324,15 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     @throws {String} SQLite error
      */
     Database.prototype.prepare = function prepare(sql, params) {
-        setValue(apiTemp, 0, "i32");
-        this.handleError(
-            sqlite3_prepare_v2(this.db, sql, -1, apiTemp, NULL)
-        );
+        var sqlPtr = stringToNewUTF8(sql);
+        try {
+            setValue(apiTemp, 0, "i32");
+            this.handleError(
+                sqlite3_prepare_v2_sqlptr(this.db, sqlPtr, -1, apiTemp, NULL)
+            );
+        } finally {
+            _free(sqlPtr);
+        }
         // pointer to a statement, or null
         var pStmt = getValue(apiTemp, "i32");
         if (pStmt === NULL) {
@@ -1228,23 +1366,106 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         return new StatementIterator(sql, this);
     };
 
-    /** Exports the contents of the database to a binary array. This
-     * operation will close and re-open the database which will cause
-     * any pragmas to be set back to their default values.
+    /** Exports a snapshot of the main database to a binary array without
+     * closing the connection. Prepared statements, registered functions,
+     * update hooks and connection settings (including pragmas) are preserved.
+     * TEMP objects and attached databases remain available on this connection,
+     * but are not included in the exported file.
+     *
+     * Exporting during an active write transaction throws an error. Commit or
+     * roll back the transaction before exporting. Read transactions are
+     * allowed. Exporting never commits or rolls back a transaction or changes
+     * savepoints, even when the export fails.
+     *
+     * The exported file uses rollback-journal format, even if this connection
+     * uses WAL mode.
+     *
+     * The returned array is an independent copy. It can be used to create a
+     * new Database, but JavaScript functions, hooks and connection settings
+     * are not stored in the file and must be configured on the new connection.
     @return {Uint8Array} An array of bytes of the SQLite3 database file
      */
     Database.prototype.export = function exportDatabase() {
-        Object.values(this.statements).forEach(function each(stmt) {
-            stmt.free();
-        });
-        Object.values(this.functions).forEach(removeFunction);
-        this.functions = {};
-        this.handleError(sqlite3_close_v2(this.db));
-        var binaryDb = FS.readFile(this.filename, { encoding: "binary" });
-        this.handleError(sqlite3_open(this.filename, apiTemp));
-        this.db = getValue(apiTemp, "i32");
-        registerExtensionFunctions(this.db);
-        return binaryDb;
+        if (!this.db) {
+            throw new Error("Database closed");
+        }
+        var filename = this.filename + "_export";
+        FS.createDataFile("/", filename, [], true, true);
+        var destination = NULL;
+        var backup = NULL;
+        try {
+            var file = FS.lookupPath(filename).node;
+            var binaryDb = null;
+            var write = file.stream_ops.write;
+            file.stream_ops = Object.create(file.stream_ops);
+            file.stream_ops.write = function writeExport(
+                stream, buffer, offset, length, position
+            ) {
+                if (binaryDb === null) {
+                    return write(stream, buffer, offset, length, position);
+                }
+                // Write directly into the final JS-owned result buffer.
+                // MEMFS would otherwise replace it on the first write.
+                file.contents.set(buffer.subarray(offset, offset + length),
+                    position);
+                file.usedBytes = Math.max(file.usedBytes, position + length);
+                return length;
+            };
+            var rc = sqlite3_open(filename, apiTemp);
+            destination = getValue(apiTemp, "i32");
+            if (rc !== SQLITE_OK) {
+                throw new Error(sqlite3_errmsg(destination));
+            }
+            backup = sqlite3_backup_init(destination, "main", this.db, "main");
+            if (backup === NULL) {
+                throw new Error(sqlite3_errmsg(destination));
+            }
+            // Initialize the backup and reject writers before allocating.
+            rc = sqlite3_backup_step(backup, 0);
+            if (rc === SQLITE_OK) {
+                var sizes = this.exec(
+                    "PRAGMA main.page_count; PRAGMA main.page_size"
+                );
+                binaryDb = new Uint8Array(
+                    sizes[0].values[0][0] * sizes[1].values[0][0]
+                );
+                file.contents = binaryDb;
+                rc = sqlite3_backup_step(backup, -1);
+            }
+            // Do not retry: this synchronous call cannot let a writer progress.
+            if (rc === SQLITE_BUSY || rc === SQLITE_LOCKED) {
+                throw new Error("Unable to export: SQLite is busy or locked. "
+                    + "Finish active write transactions before exporting.");
+            }
+            if (rc !== SQLITE_DONE) {
+                throw new Error(sqlite3_errmsg(destination));
+            }
+            rc = sqlite3_backup_finish(backup);
+            backup = NULL;
+            if (rc !== SQLITE_OK) {
+                throw new Error(sqlite3_errmsg(destination));
+            }
+            rc = sqlite3_close_v2(destination);
+            if (rc !== SQLITE_OK) {
+                throw new Error(sqlite3_errmsg(destination));
+            }
+            destination = NULL;
+            // The private file is closed and unlinked below; hand its buffer
+            // to the caller rather than making a full-size FS.readFile copy.
+            binaryDb = new Uint8Array(file.contents.buffer,
+                file.contents.byteOffset, file.usedBytes);
+            if (binaryDb.length > 0) {
+                // All pages, including WAL pages, are in the backup.
+                // Make the exported copy independent of WAL support.
+                binaryDb[18] = 1;
+                binaryDb[19] = 1;
+            }
+            return binaryDb;
+        } finally {
+            if (backup !== NULL) sqlite3_backup_finish(backup);
+            if (destination !== NULL) sqlite3_close_v2(destination);
+            FS.unlink("/" + filename);
+        }
     };
 
     /** Close the database, and all associated prepared statements.
@@ -1265,8 +1486,14 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         Object.values(this.statements).forEach(function each(stmt) {
             stmt.free();
         });
-        Object.values(this.functions).forEach(removeFunction);
-        this.functions = {};
+        this.functions.forEach(removeFunctionPointers);
+        this.functions.clear();
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
 
         if (this.updateHookFunctionPtr) {
             removeFunction(this.updateHookFunctionPtr);
@@ -1302,6 +1529,71 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         return sqlite3_changes(this.db);
     };
 
+    /** Register a callback that SQLite calls periodically while executing
+     * statements. Returning a truthy value from the callback interrupts the
+     * current statement. Passing a null or omitted callback clears the handler.
+     * A callback that throws also interrupts the statement.
+     *
+     * @param {number} nOps approximate number of virtual machine instructions
+     * between callbacks
+     * @param {function|null} [callback] callback to register, or null to
+     * clear the current callback
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.progress_handler = function progress_handler(
+        nOps,
+        callback
+    ) {
+        if (!this.db) {
+            throw "Database closed";
+        }
+
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
+
+        if (callback === null || typeof callback === "undefined") {
+            return this;
+        }
+
+        function wrappedProgressHandler() {
+            // An exception must not unwind through SQLite's C frames; treat a
+            // throwing callback as a request to interrupt the statement.
+            try {
+                return callback() ? 1 : 0;
+            } catch (error) {
+                return 1;
+            }
+        }
+
+        // int wrappedProgressHandler(void *userData)
+        this.progressHandlerFunctionPtr = addFunction(
+            wrappedProgressHandler,
+            "ii"
+        );
+        sqlite3_progress_handler(
+            this.db,
+            nOps,
+            this.progressHandlerFunctionPtr,
+            0
+        );
+        return this;
+    };
+
+    /** Interrupt a currently executing statement on this database.
+     *
+     * @return {Database} The database object. Useful for method chaining
+     */
+    Database.prototype.interrupt = function interrupt() {
+        if (!this.db) {
+            throw "Database closed";
+        }
+        sqlite3_interrupt(this.db);
+        return this;
+    };
+
     var extract_blob = function extract_blob(ptr) {
         var size = sqlite3_value_bytes(ptr);
         var blob_ptr = sqlite3_value_blob(ptr);
@@ -1324,7 +1616,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             ) {
                 arg = sqlite3_value_double(value_ptr);
             } else if (value_type === SQLITE_TEXT) {
-                arg = sqlite3_value_text(value_ptr);
+                var text_size = sqlite3_value_bytes(value_ptr);
+                var text_ptr = sqlite3_value_text(value_ptr);
+                arg = UTF8ToString(text_ptr, text_size, true);
             } else if (value_type === SQLITE_BLOB) {
                 arg = extract_blob(value_ptr);
             } else arg = null;
@@ -1341,7 +1635,10 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
                 sqlite3_result_double(cx, result);
                 break;
             case "string":
-                sqlite3_result_text(cx, result, -1, -1);
+                var text = newUTF8Text(result);
+                // -1 is SQLITE_TRANSIENT: SQLite copies the text first.
+                sqlite3_result_text(cx, text.ptr, text.size, -1);
+                _free(text.ptr);
                 break;
             case "object":
                 if (result === null) {
@@ -1364,6 +1661,23 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
                 sqlite3_result_null(cx);
         }
     };
+    var setFunctionError = function setFunctionError(cx, error) {
+        // sqlite3_result_error takes a string: passing an Error object
+        // directly would report an empty message
+        var message = error instanceof Error ? error.message : String(error);
+        sqlite3_result_error(cx, message, -1);
+    };
+
+    function getFunctionKey(name, arity) {
+        // SQLite identifies functions by ASCII case-insensitive name and arity.
+        return name.replace(/[A-Z]/g, function lowerCase(letter) {
+            return letter.toLowerCase();
+        }) + ":" + arity;
+    }
+
+    function removeFunctionPointers(pointers) {
+        pointers.forEach(removeFunction);
+    }
 
     /** Register a custom function with SQLite
       @example <caption>Register a simple function</caption>
@@ -1385,19 +1699,20 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             try {
                 result = func.apply(null, args);
             } catch (error) {
-                sqlite3_result_error(cx, error, -1);
+                setFunctionError(cx, error);
                 return;
             }
             setFunctionResult(cx, result);
         }
-        if (Object.prototype.hasOwnProperty.call(this.functions, name)) {
-            removeFunction(this.functions[name]);
-            delete this.functions[name];
+        var key = getFunctionKey(name, func.length);
+        if (this.functions.has(key)) {
+            removeFunctionPointers(this.functions.get(key));
+            this.functions.delete(key);
         }
         // The signature of the wrapped function is :
         // void wrapped(sqlite3_context *db, int argc, sqlite3_value **argv)
         var func_ptr = addFunction(wrapped_func, "viii");
-        this.functions[name] = func_ptr;
+        this.functions.set(key, [func_ptr]);
         this.handleError(sqlite3_create_function_v2(
             this.db,
             name,
@@ -1456,10 +1771,13 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             throw "An aggregate function must have a step function in " + name;
         }
 
-        // state is a state object; we'll use the pointer p to serve as the
-        // key for where we hold our state so that multiple invocations of
-        // this function never step on each other
-        var state = {};
+        // Keep each aggregate invocation's state under its context pointer.
+        var state = new Map();
+
+        function getState(p) {
+            if (!state.has(p)) state.set(p, init());
+            return state.get(p);
+        }
 
         function wrapped_step(cx, argc, argv) {
             // > The first time the sqlite3_aggregate_context(C,N) routine is
@@ -1467,7 +1785,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             // > bytes of memory, zeroes out that memory, and returns a pointer
             // > to the new memory.
             //
-            // We're going to use that pointer as a key to our state array,
+            // We're going to use that pointer as a key to our state map,
             // since using sqlite3_aggregate_context as it's meant to be used
             // through webassembly seems to be very difficult. Just allocate
             // one byte.
@@ -1476,17 +1794,17 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             // If this is the first invocation of wrapped_step, call `init`
             //
             // Make sure that every path through the step and finalize
-            // functions deletes the value state[p] when it's done so we don't
+            // functions delete the state entry when done so we don't
             // leak memory and possibly stomp the init value of future calls
-            if (!Object.hasOwnProperty.call(state, p)) state[p] = init();
+            var currentState = getState(p);
 
             var args = parseFunctionArguments(argc, argv);
-            var mergedArgs = [state[p]].concat(args);
+            var mergedArgs = [currentState].concat(args);
             try {
-                state[p] = step.apply(null, mergedArgs);
+                state.set(p, step.apply(null, mergedArgs));
             } catch (error) {
-                delete state[p];
-                sqlite3_result_error(cx, error, -1);
+                state.delete(p);
+                setFunctionError(cx, error);
             }
         }
 
@@ -1494,24 +1812,22 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
             var result;
             var p = sqlite3_aggregate_context(cx, 1);
             try {
-                result = finalize(state[p]);
+                // wrapped_step is never called when there are no rows to
+                // aggregate, so the state may not have been initialized yet
+                result = finalize(getState(p));
             } catch (error) {
-                delete state[p];
-                sqlite3_result_error(cx, error, -1);
+                state.delete(p);
+                setFunctionError(cx, error);
                 return;
             }
             setFunctionResult(cx, result);
-            delete state[p];
+            state.delete(p);
         }
 
-        if (Object.hasOwnProperty.call(this.functions, name)) {
-            removeFunction(this.functions[name]);
-            delete this.functions[name];
-        }
-        var finalize_name = name + "__finalize";
-        if (Object.hasOwnProperty.call(this.functions, finalize_name)) {
-            removeFunction(this.functions[finalize_name]);
-            delete this.functions[finalize_name];
+        var key = getFunctionKey(name, step.length - 1);
+        if (this.functions.has(key)) {
+            removeFunctionPointers(this.functions.get(key));
+            this.functions.delete(key);
         }
         // The signature of the wrapped function is :
         // void wrapped(sqlite3_context *db, int argc, sqlite3_value **argv)
@@ -1520,8 +1836,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
         // The signature of the wrapped function is :
         // void wrapped(sqlite3_context *db)
         var finalize_ptr = addFunction(wrapped_finalize, "vi");
-        this.functions[name] = step_ptr;
-        this.functions[finalize_name] = finalize_ptr;
+        this.functions.set(key, [step_ptr, finalize_ptr]);
 
         // passing null to the sixth parameter defines this as an aggregate
         // function
@@ -1680,6 +1995,832 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
      * - The [rowid](https://www.sqlite.org/rowidtable.html) of the changed row
      */
 
+    /*
+     * Page-on-demand databases.
+     *
+     * A paged database stays on the host side: SQLite pulls only the
+     * pages it needs through the sqljs_host VFS (src/vfs.c) instead of
+     * the whole file being copied into the WASM heap. The host mapping
+     * lives in pagedHostFiles, keyed by the numeric fileId baked into
+     * the VFS-level path; the C->JS trampolines below dispatch on that
+     * id, so a single set of wasm-table slots (allocated once, on first
+     * use) serves every paged database for the lifetime of the module —
+     * close() releases the per-file state and there is no
+     * addFunction/removeFunction churn per open/close cycle. (The slots
+     * are shared by all open paged databases, so they are deliberately
+     * never removeFunction'd.)
+     *
+     * openPaged() serves a read-only snapshot. openPagedWritable() adds
+     * copy-on-write: each write is recorded in a per-file overlay
+     * (pagedOverlays[fileId]) that lives in host memory — a Map of
+     * page-sized chunks — reads merge overlay-over-base, and the base
+     * file is NEVER modified. The hostIo contract is identical in both
+     * modes: hostIo.read always serves the unchanged base file; the
+     * merge is owned entirely by this module so every consumer gets the
+     * same, tested copy-on-write semantics.
+     *
+     * Overlay invariants:
+     *   - chunkSize matches the database page size when the base header
+     *     is readable, so ordinary page writes replace whole chunks;
+     *   - logicalSize is the file size SQLite sees: the base size is
+     *     snapshotted at open, then evolves only through xWrite growth
+     *     and xTruncate — the host size() is not consulted again;
+     *   - baseLimit masks the base file after truncation: base bytes at
+     *     or beyond it must never be served again (a VACUUM shrink
+     *     followed by growth would otherwise resurrect stale bytes);
+     *     bytes below logicalSize covered by neither overlay nor
+     *     baseLimit read as zeros.
+     */
+    var pagedHostFiles = {};
+    var pagedOverlays = {};
+    var nextPagedFileId = 1;
+    var pagedReadFunctionPtr = null;
+    var pagedSizeFunctionPtr = null;
+    var pagedWriteFunctionPtr = null;
+    var pagedTruncateFunctionPtr = null;
+
+    // int cb(int fileId, void *dst, int amt, sqlite3_int64 offset)
+    // Returns the number of bytes copied into dst. Fewer than amt means
+    // EOF (vfs.c zero-fills the tail and reports the short read to
+    // SQLite); a negative value means I/O error.
+    function pagedReadTrampoline(fileId, dst, amt, offsetBigInt) {
+        var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
+        var offset;
+        var bytes;
+        var length;
+        if (!host) {
+            return -1;
+        }
+        // The sqlite3_int64 offset arrives as a BigInt. Number keeps it
+        // exact below 2^53, far beyond any host-servable file; larger
+        // (or negative) offsets are rejected as corrupt.
+        offset = Number(offsetBigInt);
+        if (offset < 0 || !Number.isSafeInteger(offset)) {
+            return -1;
+        }
+        // An exception must not unwind through SQLite's C frames; report
+        // a throwing (or misbehaving) host as an I/O error instead.
+        try {
+            if (overlay) {
+                // Copy-on-write file: merged view, overlay wins.
+                return pagedOverlayRead(host, overlay, dst, amt, offset);
+            }
+            bytes = host["read"](offset, amt);
+            if (bytes == null) {
+                return 0;
+            }
+            length = bytes.length;
+            if (length > amt) {
+                bytes = bytes.subarray(0, amt);
+                length = amt;
+            }
+            HEAPU8.set(bytes, dst);
+            return length;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    // double cb(int fileId) -> file size in bytes, negative on error.
+    // A double is exact through 2^53 - 1 bytes, so no BigInt is needed.
+    function pagedSizeTrampoline(fileId) {
+        var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
+        var size;
+        if (!host) {
+            return -1;
+        }
+        if (overlay) {
+            // Copy-on-write file: the logical size is VFS-owned state
+            // (see the overlay invariants above); the host size() is a
+            // base-file property and is not consulted after open.
+            return overlay.logicalSize;
+        }
+        try {
+            size = host["size"]();
+        } catch (error) {
+            return -1;
+        }
+        if (
+            typeof size !== "number"
+            || size < 0
+            || !Number.isSafeInteger(size)
+        ) {
+            return -1;
+        }
+        return size;
+    }
+
+    /*
+     * Overlay chunks align with the database's own page size (header
+     * bytes 16/17, big-endian; the value 1 means 65536) so ordinary page
+     * writes replace exactly one chunk and never trigger a
+     * read-modify-write against the base. Falls back to 4096 — also
+     * SQLite's default page size — when the header cannot be read (e.g.
+     * a zero-length base). A mismatched chunk size only costs base
+     * re-reads on partially covered chunks; correctness does not depend
+     * on it.
+     */
+    function detectPagedChunkSize(hostIo) {
+        var bytes;
+        var pageSize;
+        try {
+            bytes = hostIo["read"](16, 2);
+        } catch (error) {
+            return 4096;
+        }
+        if (!bytes || bytes.length < 2) {
+            return 4096;
+        }
+        pageSize = (bytes[0] * 256) + bytes[1];
+        if (pageSize === 1) {
+            return 65536;
+        }
+        if (
+            pageSize >= 512
+            && pageSize <= 32768
+            && (pageSize & (pageSize - 1)) === 0
+        ) {
+            return pageSize;
+        }
+        return 4096;
+    }
+
+    /*
+     * Merged read for a copy-on-write paged file. Overlay chunks win
+     * over base bytes; bytes below logicalSize covered by neither the
+     * overlay nor baseLimit (growth holes, truncate-masked regions) read
+     * as zeros. Nothing is served at or beyond logicalSize. Returns how
+     * many bytes were produced at dst: fewer than amt means EOF, which
+     * vfs.c turns into the standard zero-filled short read. A base read
+     * that comes back short below baseLimit is a host contract violation
+     * (the base file must not change mid-session); serving fabricated
+     * zeros as data would corrupt reads, so the merge stops there and
+     * the pager sees a clean short-read error.
+     */
+    function pagedOverlayRead(host, overlay, dst, amt, offset) {
+        var chunkSize = overlay.chunkSize;
+        var toServe = overlay.logicalSize - offset;
+        var served = 0;
+        var pos = offset;
+        var chunkIndex;
+        var within;
+        var take;
+        var chunk;
+        var baseWant;
+        var baseBytes;
+        var baseGot;
+        if (toServe > amt) {
+            toServe = amt;
+        }
+        while (served < toServe) {
+            chunkIndex = Math.floor(pos / chunkSize);
+            within = pos - (chunkIndex * chunkSize);
+            take = chunkSize - within;
+            if (take > toServe - served) {
+                take = toServe - served;
+            }
+            chunk = overlay.chunks.get(chunkIndex);
+            if (chunk) {
+                HEAPU8.set(
+                    chunk.subarray(within, within + take),
+                    dst + served
+                );
+            } else {
+                baseWant = overlay.baseLimit - pos;
+                if (baseWant > take) {
+                    baseWant = take;
+                }
+                if (baseWant > 0) {
+                    baseBytes = host["read"](pos, baseWant);
+                    baseGot = baseBytes ? baseBytes.length : 0;
+                    if (baseGot > baseWant) {
+                        baseBytes = baseBytes.subarray(0, baseWant);
+                        baseGot = baseWant;
+                    }
+                    if (baseGot > 0) {
+                        HEAPU8.set(baseBytes, dst + served);
+                    }
+                    if (baseGot < baseWant) {
+                        return served + baseGot;
+                    }
+                } else {
+                    baseWant = 0;
+                }
+                if (take > baseWant) {
+                    // growth hole / truncate-masked region: zeros
+                    HEAPU8.fill(
+                        0,
+                        dst + served + baseWant,
+                        dst + served + take
+                    );
+                }
+            }
+            served += take;
+            pos += take;
+        }
+        return served;
+    }
+
+    /*
+     * Materialize the base-file content of a chunk that is about to be
+     * partially overwritten, so its untouched bytes survive. The part at
+     * or beyond baseLimit stays zero (growth hole / truncate mask). A
+     * short base read below baseLimit is a host contract violation and
+     * throws — persisting fabricated zeros into the overlay would be
+     * silent corruption.
+     */
+    function pagedFillChunkFromBase(host, overlay, chunk, chunkStart) {
+        var want = overlay.baseLimit - chunkStart;
+        var bytes;
+        var got;
+        if (want <= 0) {
+            return;
+        }
+        if (want > chunk.length) {
+            want = chunk.length;
+        }
+        bytes = host["read"](chunkStart, want);
+        got = bytes ? bytes.length : 0;
+        if (got > want) {
+            bytes = bytes.subarray(0, want);
+            got = want;
+        }
+        if (got < want) {
+            throw new Error(
+                "paged base file returned a short read at offset "
+                + chunkStart
+            );
+        }
+        chunk.set(bytes, 0);
+    }
+
+    /*
+     * Record a write in the copy-on-write overlay. Chunks fully covered
+     * by the write are replaced without consulting the base; partially
+     * covered chunks are materialized from the base first. The bytes are
+     * copied OUT of the WASM heap (chunk.set copies): the heap view is
+     * transient (memory growth reallocates it) and the source buffer
+     * belongs to SQLite. Never touches the host file.
+     */
+    function pagedOverlayWrite(host, overlay, src, amt, offset) {
+        var chunkSize = overlay.chunkSize;
+        var pos = offset;
+        var done = 0;
+        var chunkIndex;
+        var chunkStart;
+        var within;
+        var take;
+        var chunk;
+        while (done < amt) {
+            chunkIndex = Math.floor(pos / chunkSize);
+            chunkStart = chunkIndex * chunkSize;
+            within = pos - chunkStart;
+            take = chunkSize - within;
+            if (take > amt - done) {
+                take = amt - done;
+            }
+            chunk = overlay.chunks.get(chunkIndex);
+            if (!chunk) {
+                chunk = new Uint8Array(chunkSize);
+                if (take < chunkSize) {
+                    pagedFillChunkFromBase(host, overlay, chunk,
+                        chunkStart);
+                }
+                overlay.chunks.set(chunkIndex, chunk);
+            }
+            chunk.set(HEAPU8.subarray(src + done, src + done + take),
+                within);
+            pos += take;
+            done += take;
+        }
+        if (offset + amt > overlay.logicalSize) {
+            overlay.logicalSize = offset + amt;
+        }
+    }
+
+    /*
+     * Apply xTruncate to the overlay. On shrink, overlay chunks at or
+     * beyond the new size are dropped and a straddling chunk has its
+     * tail zeroed, so stale bytes cannot resurface if the file grows
+     * again; baseLimit caps how much of the base may still be served
+     * (see the overlay invariants). SQLite truncates on VACUUM and when
+     * rolling back a transaction that grew the file.
+     */
+    function pagedOverlayTruncate(overlay, size) {
+        var chunkSize = overlay.chunkSize;
+        var toDelete = [];
+        if (size < overlay.logicalSize) {
+            overlay.chunks.forEach(function each(chunk, chunkIndex) {
+                var chunkStart = chunkIndex * chunkSize;
+                if (chunkStart >= size) {
+                    toDelete.push(chunkIndex);
+                } else if (chunkStart + chunkSize > size) {
+                    chunk.fill(0, size - chunkStart);
+                }
+            });
+            toDelete.forEach(function each(chunkIndex) {
+                overlay.chunks.delete(chunkIndex);
+            });
+            if (size < overlay.baseLimit) {
+                overlay.baseLimit = size;
+            }
+        }
+        overlay.logicalSize = size;
+    }
+
+    // int cb(int fileId, const void *src, int amt, sqlite3_int64 offset)
+    // Records amt bytes at offset in the copy-on-write overlay.
+    // All-or-nothing: returns 0 on success, negative on failure (vfs.c
+    // maps failure to SQLITE_IOERR_WRITE and the statement fails
+    // cleanly).
+    function pagedWriteTrampoline(fileId, src, amt, offsetBigInt) {
+        var host = pagedHostFiles[fileId];
+        var overlay = pagedOverlays[fileId];
+        var offset;
+        if (!host || !overlay) {
+            return -1;
+        }
+        offset = Number(offsetBigInt);
+        if (offset < 0 || !Number.isSafeInteger(offset) || amt < 0) {
+            return -1;
+        }
+        // An exception must not unwind through SQLite's C frames.
+        try {
+            pagedOverlayWrite(host, overlay, src, amt, offset);
+            return 0;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    // int cb(int fileId, sqlite3_int64 size) -> 0 on success, negative
+    // on failure.
+    function pagedTruncateTrampoline(fileId, sizeBigInt) {
+        var overlay = pagedOverlays[fileId];
+        var size;
+        if (!overlay) {
+            return -1;
+        }
+        size = Number(sizeBigInt);
+        if (size < 0 || !Number.isSafeInteger(size)) {
+            return -1;
+        }
+        try {
+            pagedOverlayTruncate(overlay, size);
+            return 0;
+        } catch (error) {
+            return -1;
+        }
+    }
+
+    function pagedExport() {
+        // There is no MEMFS node to read back, and streaming gigabytes
+        // through the WASM heap would defeat the point of paged mode.
+        throw new Error(
+            "paged databases are read-only snapshots; export() is only"
+            + " available on openPagedWritable instances"
+        );
+    }
+
+    /*
+     * export() for copy-on-write paged databases: the merged image —
+     * overlay chunks where present, base bytes below baseLimit
+     * otherwise, zeros in the gaps — assembled chunk by chunk entirely
+     * in host memory; the WASM heap is not involved. Refuses to run
+     * while a transaction is open: the pager may have spilled
+     * uncommitted pages into the overlay, and the memory journal needed
+     * to undo them cannot leave the connection, so a mid-transaction
+     * image would not be a consistent database.
+     */
+    function pagedExportWritable() {
+        var overlay;
+        var host;
+        var out;
+        var chunkSize;
+        var pos;
+        var take;
+        var chunk;
+        var baseWant;
+        var bytes;
+        if (this.db === null) {
+            throw new Error("Database closed");
+        }
+        if (sqlite3_get_autocommit(this.db) === 0) {
+            throw new Error(
+                "cannot export a paged database while a transaction is"
+                + " open; COMMIT or ROLLBACK first"
+            );
+        }
+        overlay = pagedOverlays[this.pagedFileId];
+        host = pagedHostFiles[this.pagedFileId];
+        chunkSize = overlay.chunkSize;
+        out = new Uint8Array(overlay.logicalSize);
+        pos = 0;
+        while (pos < overlay.logicalSize) {
+            take = chunkSize;
+            if (take > overlay.logicalSize - pos) {
+                take = overlay.logicalSize - pos;
+            }
+            chunk = overlay.chunks.get(pos / chunkSize);
+            if (chunk) {
+                out.set(chunk.subarray(0, take), pos);
+            } else {
+                baseWant = overlay.baseLimit - pos;
+                if (baseWant > take) {
+                    baseWant = take;
+                }
+                if (baseWant > 0) {
+                    bytes = host["read"](pos, baseWant);
+                    if (bytes && bytes.length > baseWant) {
+                        bytes = bytes.subarray(0, baseWant);
+                    }
+                    if (!bytes || bytes.length < baseWant) {
+                        throw new Error(
+                            "paged base file returned a short read"
+                            + " during export (offset " + pos + ")"
+                        );
+                    }
+                    out.set(bytes, pos);
+                }
+                // any remainder of this chunk is a growth hole or
+                // truncate-masked region: already zero
+            }
+            pos += take;
+        }
+        return out;
+    }
+
+    /**
+     * @typedef {Object} Database.PagedWritableOverlayChunk
+     * @property {number} index zero-based chunk index
+     * @property {Uint8Array} data exactly `chunkSize` overlay bytes
+     */
+
+    /**
+     * @typedef {Object} Database.PagedWritableOverlay
+     * @property {number} chunkSize size of every chunk in bytes
+     * @property {number} logicalSize exact merged-image size in bytes
+     * @property {number} baseLimit exclusive upper bound for base reads
+     * @property {Array<Database.PagedWritableOverlayChunk>} chunks
+     * overlay chunks, sorted by ascending `index`
+     */
+
+    /** Return a snapshot of this database's copy-on-write overlay without
+    reading or materializing the base file.
+
+    Reconstruction contract (using the same immutable base snapshot passed
+    to `openPagedWritable`): create an output whose length is exactly
+    `logicalSize`, then process aligned `chunkSize` ranges from byte zero.
+    For a range with an entry in `chunks`, bytes from that entry win over all
+    base bytes. For a range without an entry, read base bytes only below the
+    exclusive `baseLimit`; a base read must never cross `baseLimit`, even if
+    the physical base is longer. A short read below `baseLimit` is an error,
+    not a hole. Fill the remainder of that range with zeros (these are growth
+    holes or bytes masked by a prior truncation). Ignore any chunk payload
+    tail at or beyond `logicalSize`.
+
+    `logicalSize` is the final truncation boundary: bytes at or beyond it are
+    absent, including when it is smaller than the original base. `baseLimit`
+    never expands after a shrink, so if `logicalSize` later grows, base bytes
+    in `[baseLimit, logicalSize)` must not reappear unless an overlay chunk
+    supplies them. Following these rules produces byte-for-byte the same image
+    as `export()` at the time this method returns.
+
+    Every chunk payload is copied. The live overlay arrays remain mutable by
+    later SQLite writes and truncation, and a host may transfer (and detach) a
+    returned buffer. Exposing those arrays directly would let either action
+    mutate or corrupt the database and could turn an idle snapshot into torn
+    state. Only dirty chunks are copied; no base bytes are read or copied.
+
+    Like `export()`, this method throws while a transaction is open because
+    the overlay may contain pages that its in-memory rollback journal has not
+    yet committed or undone.
+
+    @return {Database.PagedWritableOverlay} caller-owned snapshot
+     */
+    function pagedExportWritableOverlay() {
+        var overlay;
+        var chunks = [];
+        if (this.db === null) {
+            throw new Error("Database closed");
+        }
+        if (sqlite3_get_autocommit(this.db) === 0) {
+            throw new Error(
+                "cannot export a paged database while a transaction is"
+                + " open; COMMIT or ROLLBACK first"
+            );
+        }
+        overlay = pagedOverlays[this.pagedFileId];
+        overlay.chunks.forEach(function each(chunk, index) {
+            chunks.push({
+                "index": index,
+                "data": chunk.slice()
+            });
+        });
+        chunks.sort(function byChunkIndex(left, right) {
+            return left["index"] - right["index"];
+        });
+        return {
+            "chunkSize": overlay.chunkSize,
+            "logicalSize": overlay.logicalSize,
+            "baseLimit": overlay.baseLimit,
+            "chunks": chunks
+        };
+    }
+
+    // close() for paged databases (both modes): the same teardown as
+    // Database.prototype.close minus the MEMFS unlink (no backing node
+    // exists), plus the release of the host mapping and, for
+    // copy-on-write files, the overlay. Kept separate so the
+    // buffer-backed path stays untouched. Note the per-file state must
+    // outlive sqlite3_close_v2: closing with an open transaction rolls
+    // it back through the read/write trampolines.
+    function pagedClose() {
+        if (this.db === null) {
+            return;
+        }
+        Object.values(this.statements).forEach(function each(stmt) {
+            stmt.free();
+        });
+        this.functions.forEach(removeFunctionPointers);
+        this.functions.clear();
+        if (this.progressHandlerFunctionPtr) {
+            sqlite3_progress_handler(this.db, 0, 0, 0);
+            removeFunction(this.progressHandlerFunctionPtr);
+            this.progressHandlerFunctionPtr = undefined;
+        }
+        if (this.updateHookFunctionPtr) {
+            removeFunction(this.updateHookFunctionPtr);
+            this.updateHookFunctionPtr = undefined;
+        }
+        this.handleError(sqlite3_close_v2(this.db));
+        delete pagedHostFiles[this.pagedFileId];
+        delete pagedOverlays[this.pagedFileId];
+        this.db = null;
+    }
+
+    /** Open a read-only database served page-by-page by the host,
+    without copying it into the WASM heap.
+
+    The returned object is a regular {@link Database} as far as queries
+    are concerned (prepare, exec, each, ...), with two differences:
+    it cannot be written to (SQLite reports "attempt to write a readonly
+    database") and `export()` throws.
+
+    @param {Object} hostIo host file accessor
+    @param {function(number,number):Uint8Array} hostIo.read
+    called as `read(offset, length)`; must return the bytes at absolute
+    byte offset `offset`, at most `length` of them. Returning fewer
+    bytes signals EOF at `offset + returned.length`.
+    @param {function():number} hostIo.size
+    must return the file size in bytes
+    @return {Database} a Database backed by the host file
+    @example
+    var db = SQL.Database.openPaged({
+        size: function () { return fileSize; },
+        read: function (offset, length) {
+            return readBytesSomehow(offset, length);
+        }
+    });
+    var res = db.exec("SELECT * FROM t WHERE id = 42");
+    db.close();
+     */
+    Database["openPaged"] = function openPaged(hostIo) {
+        var fileId;
+        var pDb;
+        var returnCode;
+        var errorMessage;
+        var db;
+        if (
+            !hostIo
+            || typeof hostIo["read"] !== "function"
+            || typeof hostIo["size"] !== "function"
+        ) {
+            throw new Error(
+                "openPaged requires a hostIo object with"
+                + " read(offset, length) and size() functions"
+            );
+        }
+        if (pagedReadFunctionPtr === null) {
+            pagedReadFunctionPtr = addFunction(
+                pagedReadTrampoline,
+                "iiiij"
+            );
+            pagedSizeFunctionPtr = addFunction(
+                pagedSizeTrampoline,
+                "di"
+            );
+        }
+        returnCode = sqljs_vfs_register(
+            pagedReadFunctionPtr,
+            pagedSizeFunctionPtr
+        );
+        if (returnCode !== SQLITE_OK) {
+            throw new Error(
+                "could not register the sqljs_host VFS (error code "
+                + returnCode + ")"
+            );
+        }
+        fileId = nextPagedFileId;
+        nextPagedFileId += 1;
+        pagedHostFiles[fileId] = hostIo;
+        try {
+            returnCode = sqljs_open_paged(fileId, apiTemp);
+            pDb = getValue(apiTemp, "i32");
+            if (returnCode !== SQLITE_OK) {
+                // Like sqlite3_open, sqlite3_open_v2 hands back a handle
+                // even on failure so the error message can be read.
+                errorMessage = pDb !== NULL
+                    ? sqlite3_errmsg(pDb)
+                    : "SQLite error " + returnCode;
+                if (pDb !== NULL) {
+                    sqlite3_close_v2(pDb);
+                }
+                throw new Error(errorMessage);
+            }
+        } catch (openError) {
+            delete pagedHostFiles[fileId];
+            throw openError;
+        }
+        db = Object.create(Database.prototype);
+        db.db = pDb;
+        // No MEMFS node backs this database; filename is only meaningful
+        // for buffer-backed instances.
+        db.filename = null;
+        db.pagedFileId = fileId;
+        db.statements = {};
+        db.functions = new Map();
+        if (useOldExtensionFunctions) {
+            registerExtensionFunctions(db.db);
+        }
+        // Instance-level overrides (both the minified and the public
+        // name, mirroring the prototype aliasing below).
+        db.export = pagedExport;
+        db["export"] = pagedExport;
+        db.close = pagedClose;
+        db["close"] = pagedClose;
+        return db;
+    };
+
+    /** Open a host-served database copy-on-write, without copying it
+    into the WASM heap and without ever modifying the host file.
+
+    Reads pull pages from the host exactly like
+    {@link Database.openPaged}; writes land in a host-memory overlay
+    owned by this module. The hostIo contract is IDENTICAL to openPaged
+    (`read` must keep serving the unchanged base file) — the same object
+    can back both modes. The base file must not change for the lifetime
+    of the instance: its size is snapshotted at open and reads are merged
+    against that snapshot.
+
+    The returned object is a regular writable {@link Database}
+    (prepare/run/exec/each and the statement API all work), with these
+    properties:
+    - the connection runs with `PRAGMA journal_mode=MEMORY`: the
+      rollback journal lives in memory, so failed statements and
+      ROLLBACK work without a journal file ever existing;
+    - `export()` produces the merged image (base file + overlay) as a
+      Uint8Array, and throws while a transaction is open;
+    - `exportPagedWritableOverlay()` returns the copied dirty chunks and
+      reconstruction metadata without reading or materializing the base;
+    - `close()` releases the overlay.
+
+    @param {Object} hostIo host file accessor
+    @param {function(number,number):Uint8Array} hostIo.read
+    called as `read(offset, length)`; must return the bytes of the
+    unchanged base file at absolute byte offset `offset`, at most
+    `length` of them. Returning fewer bytes signals EOF.
+    @param {function():number} hostIo.size
+    must return the base file size in bytes
+    @return {Database} a writable Database backed by base file + overlay
+    @example
+    var db = SQL.Database.openPagedWritable({
+        size: function () { return fileSize; },
+        read: function (offset, length) {
+            return readBytesSomehow(offset, length);
+        }
+    });
+    db.run("UPDATE t SET name = 'x' WHERE id = 42");
+    var mergedImage = db.export(); // base file itself is untouched
+    db.close();
+     */
+    Database["openPagedWritable"] = function openPagedWritable(hostIo) {
+        var fileId;
+        var pDb;
+        var returnCode;
+        var errorMessage;
+        var db;
+        var baseSize;
+        if (
+            !hostIo
+            || typeof hostIo["read"] !== "function"
+            || typeof hostIo["size"] !== "function"
+        ) {
+            throw new Error(
+                "openPagedWritable requires a hostIo object with"
+                + " read(offset, length) and size() functions"
+            );
+        }
+        // Snapshot the base size now: it seeds logicalSize/baseLimit and
+        // the host is never asked again (see the overlay invariants).
+        baseSize = hostIo["size"]();
+        if (
+            typeof baseSize !== "number"
+            || baseSize < 0
+            || !Number.isSafeInteger(baseSize)
+        ) {
+            throw new Error(
+                "hostIo.size() must return a non-negative byte count"
+            );
+        }
+        if (pagedReadFunctionPtr === null) {
+            pagedReadFunctionPtr = addFunction(
+                pagedReadTrampoline,
+                "iiiij"
+            );
+            pagedSizeFunctionPtr = addFunction(
+                pagedSizeTrampoline,
+                "di"
+            );
+        }
+        if (pagedWriteFunctionPtr === null) {
+            pagedWriteFunctionPtr = addFunction(
+                pagedWriteTrampoline,
+                "iiiij"
+            );
+            pagedTruncateFunctionPtr = addFunction(
+                pagedTruncateTrampoline,
+                "iij"
+            );
+        }
+        returnCode = sqljs_vfs_register(
+            pagedReadFunctionPtr,
+            pagedSizeFunctionPtr
+        );
+        if (returnCode === SQLITE_OK) {
+            returnCode = sqljs_vfs_register_rw(
+                pagedWriteFunctionPtr,
+                pagedTruncateFunctionPtr
+            );
+        }
+        if (returnCode !== SQLITE_OK) {
+            throw new Error(
+                "could not register the sqljs_host VFS (error code "
+                + returnCode + ")"
+            );
+        }
+        fileId = nextPagedFileId;
+        nextPagedFileId += 1;
+        pagedHostFiles[fileId] = hostIo;
+        pagedOverlays[fileId] = {
+            chunkSize: detectPagedChunkSize(hostIo),
+            chunks: new Map(),
+            logicalSize: baseSize,
+            baseLimit: baseSize
+        };
+        try {
+            returnCode = sqljs_open_paged_rw(fileId, apiTemp);
+            pDb = getValue(apiTemp, "i32");
+            if (returnCode !== SQLITE_OK) {
+                // Like sqlite3_open, sqlite3_open_v2 hands back a handle
+                // even on failure so the error message can be read.
+                errorMessage = pDb !== NULL
+                    ? sqlite3_errmsg(pDb)
+                    : "SQLite error " + returnCode;
+                if (pDb !== NULL) {
+                    sqlite3_close_v2(pDb);
+                }
+                throw new Error(errorMessage);
+            }
+        } catch (openError) {
+            delete pagedHostFiles[fileId];
+            delete pagedOverlays[fileId];
+            throw openError;
+        }
+        db = Object.create(Database.prototype);
+        db.db = pDb;
+        // No MEMFS node backs this database; filename is only meaningful
+        // for buffer-backed instances.
+        db.filename = null;
+        db.pagedFileId = fileId;
+        db.statements = {};
+        db.functions = new Map();
+        if (useOldExtensionFunctions) {
+            registerExtensionFunctions(db.db);
+        }
+        // Instance-level overrides (both the minified and the public
+        // name, mirroring the prototype aliasing below).
+        db.export = pagedExportWritable;
+        db["export"] = pagedExportWritable;
+        db.exportPagedWritableOverlay = pagedExportWritableOverlay;
+        db["exportPagedWritableOverlay"] = pagedExportWritableOverlay;
+        db.close = pagedClose;
+        db["close"] = pagedClose;
+        return db;
+    };
+
     // Preserve public API names across minification.
     /* eslint-disable no-self-assign */
     Statement.prototype["bind"] = Statement.prototype.bind;
@@ -1710,6 +2851,9 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
     Database.prototype["close"] = Database.prototype.close;
     Database.prototype["handleError"] = Database.prototype.handleError;
     Database.prototype["getRowsModified"] = Database.prototype.getRowsModified;
+    Database.prototype["progress_handler"]
+        = Database.prototype.progress_handler;
+    Database.prototype["interrupt"] = Database.prototype.interrupt;
     Database.prototype["create_function"] = Database.prototype.create_function;
     Database.prototype["create_aggregate"]
         = Database.prototype.create_aggregate;
@@ -1722,7 +2866,7 @@ Module["onRuntimeInitialized"] = function onRuntimeInitialized() {
 // end include: src/api.js
 
 
-var arguments_ = [];
+var programArgs = [];
 var thisProgram = './this.program';
 var quit_ = (status, toThrow) => {
   throw toThrow;
@@ -1732,7 +2876,7 @@ var quit_ = (status, toThrow) => {
 // before the page load. In non-MODULARIZE modes generate it here.
 var _scriptName = globalThis.document?.currentScript?.src;
 
-if (typeof __filename != 'undefined') { // Node
+if (typeof __filename !== 'undefined') { // Node
   _scriptName = __filename;
 } else
 if (ENVIRONMENT_IS_WORKER) {
@@ -1774,7 +2918,7 @@ readAsync = async (filename, binary = true) => {
   // See the comment in the `readBinary` function.
   filename = isFileURI(filename) ? new URL(filename) : filename;
   var ret = fs.readFileSync(filename, binary ? undefined : 'utf8');
-  assert(binary ? Buffer.isBuffer(ret) : typeof ret == 'string');
+  assert(binary ? Buffer.isBuffer(ret) : typeof ret === 'string');
   return ret;
 };
 // end include: node_shell_read.js
@@ -1782,10 +2926,10 @@ readAsync = async (filename, binary = true) => {
     thisProgram = process.argv[1].replace(/\\/g, '/');
   }
 
-  arguments_ = process.argv.slice(2);
+  programArgs = process.argv.slice(2);
 
   // MODULARIZE will export the module in the proper place outside, we don't need to export here
-  if (typeof module != 'undefined') {
+  if (typeof module !== 'undefined') {
     module['exports'] = Module;
   }
 
@@ -1874,7 +3018,7 @@ var NODEFS = 'NODEFS is no longer included by default; build with -lnodefs.js';
 // perform assertions in shell.js after we set up out() and err(), as otherwise
 // if an assertion fails it cannot print the message
 
-assert(!ENVIRONMENT_IS_SHELL, 'shell environment detected but not enabled at build time.  Add `shell` to `-sENVIRONMENT` to enable.');
+assert(!ENVIRONMENT_IS_SHELL, 'shell environment detected but not enabled at build time (add `shell` to `-sENVIRONMENT` to enable)');
 
 // end include: shell.js
 
@@ -1931,52 +3075,19 @@ function assert(condition, text) {
 var isFileURI = (filename) => filename.startsWith('file://');
 
 // include: runtime_common.js
-// include: runtime_stack_check.js
-// Initializes the stack cookie. Called at the startup of main and at the startup of each thread in pthreads mode.
-function writeStackCookie() {
-  var max = _emscripten_stack_get_end();
-  assert((max & 3) == 0);
-  // If the stack ends at address zero we write our cookies 4 bytes into the
-  // stack.  This prevents interference with SAFE_HEAP and ASAN which also
-  // monitor writes to address zero.
-  if (max == 0) {
-    max += 4;
-  }
-  // The stack grow downwards towards _emscripten_stack_get_end.
-  // We write cookies to the final two words in the stack and detect if they are
-  // ever overwritten.
-  HEAPU32[((max)>>2)] = 0x02135467;checkInt32(0x02135467);
-  HEAPU32[(((max)+(4))>>2)] = 0x89BACDFE;checkInt32(0x89BACDFE);
-  // Also test the global address 0 for integrity.
-  HEAPU32[((0)>>2)] = 1668509029;checkInt32(1668509029);
-}
-
-function checkStackCookie() {
-  if (ABORT) return;
-  var max = _emscripten_stack_get_end();
-  // See writeStackCookie().
-  if (max == 0) {
-    max += 4;
-  }
-  var cookie1 = HEAPU32[((max)>>2)];
-  var cookie2 = HEAPU32[(((max)+(4))>>2)];
-  if (cookie1 != 0x02135467 || cookie2 != 0x89BACDFE) {
-    abort(`Stack overflow! Stack cookie has been overwritten at ${ptrToString(max)}, expected hex dwords 0x89BACDFE and 0x2135467, but received ${ptrToString(cookie2)} ${ptrToString(cookie1)}`);
-  }
-  // Also test the global address 0 for integrity.
-  if (HEAPU32[((0)>>2)] != 0x63736d65 /* 'emsc' */) {
-    abort('Runtime error: The application has corrupted its heap memory area (address zero)!');
-  }
-}
-// end include: runtime_stack_check.js
 // include: runtime_exceptions.js
+// Base Emscripten EH error class
+class EmscriptenEH {}
+
+class EmscriptenSjLj extends EmscriptenEH {}
+
 // end include: runtime_exceptions.js
 // include: runtime_debug.js
 var runtimeDebug = true; // Switch to false at runtime to disable logging at the right times
 
 // Used by XXXXX_DEBUG settings to output debug messages.
 function dbg(...args) {
-  if (!runtimeDebug && typeof runtimeDebug != 'undefined') return;
+  if (!runtimeDebug && typeof runtimeDebug !== 'undefined') return;
   // TODO(sbc): Make this configurable somehow.  Its not always convenient for
   // logging to show up as warnings.
   console.warn(...args);
@@ -1984,22 +3095,38 @@ function dbg(...args) {
 
 // Endianness check
 (() => {
-  var h16 = new Int16Array(1);
-  var h8 = new Int8Array(h16.buffer);
+  const h16 = new Int16Array(1);
+  const h8 = new Int8Array(h16.buffer);
   h16[0] = 0x6373;
   if (h8[0] !== 0x73 || h8[1] !== 0x63) abort('Runtime error: expected the system to be little-endian! (Run with -sSUPPORT_BIG_ENDIAN to bypass)');
 })();
 
 function consumedModuleProp(prop) {
-  if (!Object.getOwnPropertyDescriptor(Module, prop)) {
-    Object.defineProperty(Module, prop, {
-      configurable: true,
-      set() {
-        abort(`Attempt to set \`Module.${prop}\` after it has already been processed.  This can happen, for example, when code is injected via '--post-js' rather than '--pre-js'`);
-
+  let value = Module[prop];
+  const msg = `Attempt to modify \`Module.${prop}\` after it has already been processed.  This can happen, for example, when code is injected via '--post-js' rather than '--pre-js'`;
+  if (Array.isArray(value)) {
+    value = new Proxy(value, {
+      set(target, key, val) {
+        abort(msg);
+        return false;
+      },
+      defineProperty(target, key, descriptor) {
+        abort(msg);
+        return false;
+      },
+      deleteProperty(target, key) {
+        abort(msg);
+        return false;
       }
     });
   }
+  Object.defineProperty(Module, prop, {
+    configurable: true,
+    get() { return value; },
+    set() {
+      abort(msg);
+    }
+  });
 }
 
 function makeInvalidEarlyAccess(name) {
@@ -2060,11 +3187,11 @@ function missingLibrarySymbol(sym) {
   hookGlobalSymbolAccess(sym, () => {
     // Can't `abort()` here because it would break code that does runtime
     // checks.  e.g. `if (typeof SDL === 'undefined')`.
-    var msg = `\`${sym}\` is a library symbol and not included by default; add it to your library.js __deps or to DEFAULT_LIBRARY_FUNCS_TO_INCLUDE on the command line`;
+    let msg = `\`${sym}\` is a library symbol and not included by default; add it to your library.js __deps or to DEFAULT_LIBRARY_FUNCS_TO_INCLUDE on the command line`;
     // DEFAULT_LIBRARY_FUNCS_TO_INCLUDE requires the name as it appears in
     // library.js, which means $name for a JS name with no prefix, or name
     // for a JS name like _name.
-    var librarySymbol = sym;
+    let librarySymbol = sym;
     if (!librarySymbol.startsWith('_')) {
       librarySymbol = '$' + sym;
     }
@@ -2085,7 +3212,7 @@ function unexportedRuntimeSymbol(sym) {
     Object.defineProperty(Module, sym, {
       configurable: true,
       get() {
-        var msg = `'${sym}' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the Emscripten FAQ)`;
+        let msg = `'${sym}' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the Emscripten FAQ)`;
         if (isExportedByForceFilesystem(sym)) {
           msg += '. Alternatively, forcing filesystem support (-sFORCE_FILESYSTEM) can export this for you';
         }
@@ -2095,17 +3222,17 @@ function unexportedRuntimeSymbol(sym) {
   }
 }
 
-var MAX_UINT8  = (2 **  8) - 1;
-var MAX_UINT16 = (2 ** 16) - 1;
-var MAX_UINT32 = (2 ** 32) - 1;
-var MAX_UINT53 = (2 ** 53) - 1;
-var MAX_UINT64 = (2 ** 64) - 1;
+const MAX_UINT8  = (2 **  8) - 1;
+const MAX_UINT16 = (2 ** 16) - 1;
+const MAX_UINT32 = (2 ** 32) - 1;
+const MAX_UINT53 = (2 ** 53) - 1;
+const MAX_UINT64 = (2 ** 64) - 1;
 
-var MIN_INT8  = - (2 ** ( 8 - 1));
-var MIN_INT16 = - (2 ** (16 - 1));
-var MIN_INT32 = - (2 ** (32 - 1));
-var MIN_INT53 = - (2 ** (53 - 1));
-var MIN_INT64 = - (2 ** (64 - 1));
+const MIN_INT8  = - (2 ** ( 8 - 1));
+const MIN_INT16 = - (2 ** (16 - 1));
+const MIN_INT32 = - (2 ** (32 - 1));
+const MIN_INT53 = - (2 ** (53 - 1));
+const MIN_INT64 = - (2 ** (64 - 1));
 
 function checkInt(value, bits, min, max) {
   assert(Number.isInteger(Number(value)), `attempt to write non-integer (${value}) into integer heap`);
@@ -2113,57 +3240,86 @@ function checkInt(value, bits, min, max) {
   assert(value >= min, `value (${value}) too small to write as ${bits}-bit value`);
 }
 
-var checkInt1 = (value) => checkInt(value, 1, 1);
-var checkInt8 = (value) => checkInt(value, 8, MIN_INT8, MAX_UINT8);
-var checkInt16 = (value) => checkInt(value, 16, MIN_INT16, MAX_UINT16);
-var checkInt32 = (value) => checkInt(value, 32, MIN_INT32, MAX_UINT32);
-var checkInt53 = (value) => checkInt(value, 53, MIN_INT53, MAX_UINT53);
-var checkInt64 = (value) => checkInt(value, 64, MIN_INT64, MAX_UINT64);
+const checkInt1 = (value) => checkInt(value, 1, 1);
+const checkInt8 = (value) => checkInt(value, 8, MIN_INT8, MAX_UINT8);
+const checkInt16 = (value) => checkInt(value, 16, MIN_INT16, MAX_UINT16);
+const checkInt32 = (value) => checkInt(value, 32, MIN_INT32, MAX_UINT32);
+const checkInt53 = (value) => checkInt(value, 53, MIN_INT53, MAX_UINT53);
+const checkInt64 = (value) => checkInt(value, 64, MIN_INT64, MAX_UINT64);
 
 // end include: runtime_debug.js
-// Memory management
-var
-/** @type {!Int8Array} */
-  HEAP8,
-/** @type {!Uint8Array} */
-  HEAPU8,
-/** @type {!Int16Array} */
-  HEAP16,
-/** @type {!Uint16Array} */
-  HEAPU16,
-/** @type {!Int32Array} */
-  HEAP32,
-/** @type {!Uint32Array} */
-  HEAPU32,
-/** @type {!Float32Array} */
-  HEAPF32,
-/** @type {!Float64Array} */
-  HEAPF64;
+// include: runtime_stack_check.js
+const stackCookie1 = 0x02135467;
+const stackCookie2 = 0x89BACDFE;
 
-// BigInt64Array type is not correctly defined in closure
-var
-/** not-@type {!BigInt64Array} */
-  HEAP64,
-/* BigUint64Array type is not correctly defined in closure
-/** not-@type {!BigUint64Array} */
-  HEAPU64;
+// Initializes the stack cookie. Called at the startup of main and at the startup of each thread in pthreads mode.
+function writeStackCookie() {
+  let max = _emscripten_stack_get_end();
+  assert((max & 3) == 0);
+  // If the stack ends at address zero we write our cookies 4 bytes into the
+  // stack.  This prevents interference with SAFE_HEAP and ASAN which also
+  // monitor writes to address zero.
+  if (max == 0) {
+    max += 4;
+  }
+  // The stack grow downwards towards _emscripten_stack_get_end.
+  // We write cookies to the final two words in the stack and detect if they are
+  // ever overwritten.
+  HEAPU32[((max)>>2)] = stackCookie1;checkInt32(stackCookie1);
+  HEAPU32[(((max)+(4))>>2)] = stackCookie2;checkInt32(stackCookie2);
+  // Also test the global address 0 for integrity.
+  HEAPU32[((0)>>2)] = 1668509029;checkInt32(1668509029);
+}
+
+function u32ToHexString(num) {
+  return '0x' + (num >>> 0).toString(16).padStart(8, '0');
+}
+
+function checkStackCookie() {
+  if (ABORT) return;
+  let max = _emscripten_stack_get_end();
+  // See writeStackCookie().
+  if (max == 0) {
+    max += 4;
+  }
+  const val1 = HEAPU32[((max)>>2)];
+  const val2 = HEAPU32[(((max)+(4))>>2)];
+  if (val1 != stackCookie1 || val2 != stackCookie2) {
+    abort(`Stack overflow! Stack cookie has been overwritten at ${ptrToString(max)}, expected hex dwords ${u32ToHexString(stackCookie2)} and ${u32ToHexString(stackCookie1)}, but received ${u32ToHexString(val2)} ${u32ToHexString(val1)}`);
+  }
+  // Also test the global address 0 for integrity.
+  if (HEAPU32[((0)>>2)] != 0x63736d65 /* 'emsc' */) {
+    abort('Runtime error: The application has corrupted its heap memory area (address zero)!');
+  }
+}
+// end include: runtime_stack_check.js
+// Memory management
 
 var runtimeInitialized = false;
 
 
 
+// When ALLOW_MEMORY_GROWTH is enabled, the conversion from Wasm
+// memory to ArrayBuffer requires some additional logic.
+function getMemoryBuffer() {
+  return wasmMemory.buffer;
+}
+
 function updateMemoryViews() {
-  var b = wasmMemory.buffer;
+  // If we already have a heap that is resizeable/growable buffer we don't
+  // need to do anything in updateMemoryViews.
+  if (HEAP8?.buffer?.resizable) return;
+  var b = getMemoryBuffer();
   HEAP8 = new Int8Array(b);
   HEAP16 = new Int16Array(b);
   HEAPU8 = new Uint8Array(b);
-  HEAPU16 = new Uint16Array(b);
+  
   HEAP32 = new Int32Array(b);
   HEAPU32 = new Uint32Array(b);
   HEAPF32 = new Float32Array(b);
   HEAPF64 = new Float64Array(b);
   HEAP64 = new BigInt64Array(b);
-  HEAPU64 = new BigUint64Array(b);
+  
 }
 
 // include: memoryprofiler.js
@@ -2173,11 +3329,10 @@ assert(globalThis.Int32Array && globalThis.Float64Array && Int32Array.prototype.
        'JS engine does not provide full typed array support');
 
 function preRun() {
-  if (Module['preRun']) {
-    if (typeof Module['preRun'] == 'function') Module['preRun'] = [Module['preRun']];
-    while (Module['preRun'].length) {
-      addOnPreRun(Module['preRun'].shift());
-    }
+  var preRun = Module['preRun'];
+  if (preRun) {
+    if (typeof preRun === 'function') preRun = [preRun];
+    onPreRuns.push(...preRun);
   }
   consumedModuleProp('preRun');
   // Begin ATPRERUNS hooks
@@ -2203,17 +3358,17 @@ TTY.init();
   // Begin ATPOSTCTORS hooks
   FS.ignorePermissions = false;
   // End ATPOSTCTORS hooks
+
+  checkStackCookie();
 }
 
 function postRun() {
   checkStackCookie();
-   // PThreads reuse the runtime from the main thread.
 
-  if (Module['postRun']) {
-    if (typeof Module['postRun'] == 'function') Module['postRun'] = [Module['postRun']];
-    while (Module['postRun'].length) {
-      addOnPostRun(Module['postRun'].shift());
-    }
+  var postRun = Module['postRun'];
+  if (postRun) {
+    if (typeof postRun === 'function') postRun = [postRun];
+    onPostRuns.push(...postRun);
   }
   consumedModuleProp('postRun');
 
@@ -2222,11 +3377,13 @@ function postRun() {
   // End ATPOSTRUNS hooks
 }
 
-/** @param {string|number=} what */
+/**
+ * @param {string|number=} what
+ */
 function abort(what) {
   Module['onAbort']?.(what);
 
-  what = 'Aborted(' + what + ')';
+  what = `Aborted(${what})`;
   // TODO(sbc): Should we remove printing and leave it up to whoever
   // catches the exception?
   err(what);
@@ -2241,28 +3398,16 @@ function abort(what) {
   // a trap or not based on a hidden field within the object. So at the moment
   // we don't have a way of throwing a wasm trap from JS. TODO Make a JS API that
   // allows this in the wasm spec.
-
-  // Suppress closure compiler warning here. Closure compiler's builtin extern
-  // definition for WebAssembly.RuntimeError claims it takes no arguments even
-  // though it can.
-  // TODO(https://github.com/google/closure-compiler/pull/3913): Remove if/when upstream closure gets fixed.
-  /** @suppress {checkTypes} */
-  var e = new WebAssembly.RuntimeError(what);
-
-  // Throw the error whether or not MODULARIZE is set because abort is used
-  // in code paths apart from instantiation where an exception is expected
-  // to be thrown when abort is called.
-  throw e;
+  throw new WebAssembly.RuntimeError(what);
 }
 
-function createExportWrapper(name, nargs) {
+function createExportWrapper(name, func, nargs) {
+  assert(func);
   return (...args) => {
     assert(runtimeInitialized, `native function \`${name}\` called before runtime initialization`);
-    var f = wasmExports[name];
-    assert(f, `exported native function \`${name}\` not found`);
     // Only assert for too many arguments. Too few can be valid since the missing arguments will be zero filled.
     assert(args.length <= nargs, `native function \`${name}\` called with ${args.length} args but expects ${nargs}`);
-    return f(...args);
+    return func(...args);
   };
 }
 
@@ -2289,8 +3434,8 @@ async function getWasmBinary(binaryFile) {
   if (!wasmBinary) {
     // Fetch the binary using readAsync
     try {
-      var response = await readAsync(binaryFile);
-      return new Uint8Array(response);
+      // Await so a rejection is caught and falls back to getBinarySync.
+      return await readAsync(binaryFile);
     } catch {
       // Fall back to getBinarySync below;
     }
@@ -2320,12 +3465,9 @@ async function instantiateAsync(binary, binaryFile, imports) {
   if (!binary
       // Don't use streaming for file:// delivered objects in a webview, fetch them synchronously.
       && !isFileURI(binaryFile)
-      // Avoid instantiateStreaming() on Node.js environment for now, as while
-      // Node.js v18.1.0 implements it, it does not have a full fetch()
-      // implementation yet.
-      //
-      // Reference:
-      //   https://github.com/emscripten-core/emscripten/pull/16917
+      // Avoid using instantiateStreaming() on Node.js since the `fetch()` API
+      // does not support `file://` URLs.
+      // See: https://github.com/emscripten-core/emscripten/pull/16917
       && !ENVIRONMENT_IS_NODE
      ) {
     try {
@@ -2358,18 +3500,15 @@ async function createWasm() {
   // Load the wasm module and create an instance of using native support in the JS engine.
   // handle a generated wasm instance, receiving its exports and
   // performing other necessary setup
-  /** @param {WebAssembly.Module=} module*/
-  function receiveInstance(instance, module) {
+  function receiveInstance(instance) {
     wasmExports = instance.exports;
 
     assignWasmExports(wasmExports);
 
     updateMemoryViews();
 
-    removeRunDependency('wasm-instantiate');
     return wasmExports;
   }
-  addRunDependency('wasm-instantiate');
 
   // Prefer streaming instantiation if available.
   // Async compilation can be confusing when an error on the page overwrites Module
@@ -2394,15 +3533,14 @@ async function createWasm() {
   // performing.
   // Also pthreads and wasm workers initialize the wasm instance through this
   // path.
-  if (Module['instantiateWasm']) {
-    return new Promise((resolve, reject) => {
+  var instantiateWasm = Module['instantiateWasm'];
+  if (instantiateWasm) {
+    return new Promise((resolve) => {
       try {
-        Module['instantiateWasm'](info, (inst, mod) => {
-          resolve(receiveInstance(inst, mod));
-        });
+        instantiateWasm(info, (inst) => resolve(receiveInstance(inst)));
       } catch(e) {
         err(`Module.instantiateWasm callback failed with error: ${e}`);
-        reject(e);
+        throw e;
       }
     });
   }
@@ -2417,7 +3555,6 @@ async function createWasm() {
 
 // Begin JS library code
 
-
   class ExitStatus {
       name = 'ExitStatus';
       constructor(status) {
@@ -2425,7 +3562,12 @@ async function createWasm() {
         this.status = status;
       }
     }
-
+  /** @type {!Int32Array} */
+  var HEAP32;
+  /** @type {!Int8Array} */
+  var HEAP8;
+  /** @type {!Uint32Array} */
+  var HEAPU32;
   var callRuntimeCallbacks = (callbacks) => {
       while (callbacks.length > 0) {
         // Pass the module as the first argument.
@@ -2434,137 +3576,23 @@ async function createWasm() {
     };
   var onPostRuns = [];
   var addOnPostRun = (cb) => onPostRuns.push(cb);
-
   var onPreRuns = [];
   var addOnPreRun = (cb) => onPreRuns.push(cb);
 
-  var runDependencies = 0;
-  
-  
-  var dependenciesFulfilled = null;
-  
-  var runDependencyTracking = {
-  };
-  
-  var runDependencyWatcher = null;
-  var removeRunDependency = (id) => {
-      runDependencies--;
-  
-      Module['monitorRunDependencies']?.(runDependencies);
-  
-      assert(id, 'removeRunDependency requires an ID');
-      assert(runDependencyTracking[id]);
-      delete runDependencyTracking[id];
-      if (runDependencies == 0) {
-        if (runDependencyWatcher !== null) {
-          clearInterval(runDependencyWatcher);
-          runDependencyWatcher = null;
-        }
-        if (dependenciesFulfilled) {
-          var callback = dependenciesFulfilled;
-          dependenciesFulfilled = null;
-          callback(); // can add another dependenciesFulfilled
-        }
-      }
-    };
-  
-  
-  var addRunDependency = (id) => {
-      runDependencies++;
-  
-      Module['monitorRunDependencies']?.(runDependencies);
-  
-      assert(id, 'addRunDependency requires an ID')
-      assert(!runDependencyTracking[id]);
-      runDependencyTracking[id] = 1;
-      if (runDependencyWatcher === null && globalThis.setInterval) {
-        // Check for missing dependencies every few seconds
-        runDependencyWatcher = setInterval(() => {
-          if (ABORT) {
-            clearInterval(runDependencyWatcher);
-            runDependencyWatcher = null;
-            return;
-          }
-          var shown = false;
-          for (var dep in runDependencyTracking) {
-            if (!shown) {
-              shown = true;
-              err('still waiting on run dependencies:');
-            }
-            err(`dependency: ${dep}`);
-          }
-          if (shown) {
-            err('(end of list)');
-          }
-        }, 10000);
-        // Prevent this timer from keeping the runtime alive if nothing
-        // else is.
-        runDependencyWatcher.unref?.()
-      }
-    };
-
-
-  
-    /**
-   * @param {number} ptr
-   * @param {string} type
-   */
-  function getValue(ptr, type = 'i8') {
-    if (type.endsWith('*')) type = '*';
-    switch (type) {
-      case 'i1': return HEAP8[ptr];
-      case 'i8': return HEAP8[ptr];
-      case 'i16': return HEAP16[((ptr)>>1)];
-      case 'i32': return HEAP32[((ptr)>>2)];
-      case 'i64': return HEAP64[((ptr)>>3)];
-      case 'float': return HEAPF32[((ptr)>>2)];
-      case 'double': return HEAPF64[((ptr)>>3)];
-      case '*': return HEAPU32[((ptr)>>2)];
-      default: abort(`invalid type for getValue: ${type}`);
-    }
-  }
-
   var noExitRuntime = true;
-
-  var ptrToString = (ptr) => {
+  function ptrToString(ptr) {
       assert(typeof ptr === 'number', `ptrToString expects a number, got ${typeof ptr}`);
       // Convert to 32-bit unsigned value
       ptr >>>= 0;
       return '0x' + ptr.toString(16).padStart(8, '0');
-    };
-
-
+    }
   var setStackLimits = () => {
       var stackLow = _emscripten_stack_get_base();
       var stackHigh = _emscripten_stack_get_end();
       ___set_stack_limits(stackLow, stackHigh);
     };
-
-  
-    /**
-   * @param {number} ptr
-   * @param {number} value
-   * @param {string} type
-   */
-  function setValue(ptr, value, type = 'i8') {
-    if (type.endsWith('*')) type = '*';
-    switch (type) {
-      case 'i1': HEAP8[ptr] = value;checkInt8(value); break;
-      case 'i8': HEAP8[ptr] = value;checkInt8(value); break;
-      case 'i16': HEAP16[((ptr)>>1)] = value;checkInt16(value); break;
-      case 'i32': HEAP32[((ptr)>>2)] = value;checkInt32(value); break;
-      case 'i64': HEAP64[((ptr)>>3)] = BigInt(value);checkInt64(value); break;
-      case 'float': HEAPF32[((ptr)>>2)] = value; break;
-      case 'double': HEAPF64[((ptr)>>3)] = value; break;
-      case '*': HEAPU32[((ptr)>>2)] = value; break;
-      default: abort(`invalid type for setValue: ${type}`);
-    }
-  }
-
   var stackRestore = (val) => __emscripten_stack_restore(val);
-
   var stackSave = () => _emscripten_stack_get_current();
-
   var warnOnce = (text) => {
       warnOnce.shown ||= {};
       if (!warnOnce.shown[text]) {
@@ -2574,10 +3602,17 @@ async function createWasm() {
       }
     };
 
-  
-
+  /** @type {!Uint8Array} */
+  var HEAPU8;
   var UTF8Decoder = globalThis.TextDecoder && new TextDecoder();
   
+    /**
+   * heapOrArray is either a regular array, or a JavaScript typed array view.
+   * @param {number} idx
+   * @param {number=} maxBytesToRead
+   * @param {boolean=} ignoreNul
+   * @return {number}
+   */
   var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
       var maxIdx = idx + maxBytesToRead;
       if (ignoreNul) return maxIdx;
@@ -2588,7 +3623,6 @@ async function createWasm() {
       while (heapOrArray[idx] && !(idx >= maxIdx)) ++idx;
       return idx;
     };
-  
   
     /**
    * Given a pointer 'idx' to a null-terminated UTF8-encoded string in the given
@@ -2622,7 +3656,7 @@ async function createWasm() {
         if ((u0 & 0xF0) == 0xE0) {
           u0 = ((u0 & 15) << 12) | (u1 << 6) | u2;
         } else {
-          if ((u0 & 0xF8) != 0xF0) warnOnce('Invalid UTF-8 leading byte ' + ptrToString(u0) + ' encountered when deserializing a UTF-8 string in wasm memory to a JS string!');
+          if ((u0 & 0xF8) != 0xF0) warnOnce(`Invalid UTF-8 leading byte ${ptrToString(u0)} encountered when deserializing a UTF-8 string in wasm memory to a JS string!`);
           u0 = ((u0 & 7) << 18) | (u1 << 12) | (u2 << 6) | (heapOrArray[idx++] & 63);
         }
   
@@ -2650,14 +3684,11 @@ async function createWasm() {
    * @return {string}
    */
   var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) => {
-      assert(typeof ptr == 'number', `UTF8ToString expects a number (got ${typeof ptr})`);
+      assert(typeof ptr === 'number', `UTF8ToString expects a number (got ${typeof ptr})`);
       return ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead, ignoreNul) : '';
     };
   var ___assert_fail = (condition, filename, line, func) =>
       abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : 'unknown filename', line, func ? UTF8ToString(func) : 'unknown function']);
-
-  
-  
   var ___handle_stack_overflow = (requested) => {
       var base = _emscripten_stack_get_base();
       var end = _emscripten_stack_get_end();
@@ -2665,763 +3696,6 @@ async function createWasm() {
             `, with stack limits [${ptrToString(end)} - ${ptrToString(base)}` +
             ']). If you require more stack space build with -sSTACK_SIZE=<bytes>');
     };
-
-  var PATH = {
-  isAbs:(path) => path.charAt(0) === '/',
-  splitPath:(filename) => {
-        var splitPathRe = /^(\/?|)([\s\S]*?)((?:\.{1,2}|[^\/]+?|)(\.[^.\/]*|))(?:[\/]*)$/;
-        return splitPathRe.exec(filename).slice(1);
-      },
-  normalizeArray:(parts, allowAboveRoot) => {
-        // if the path tries to go above the root, `up` ends up > 0
-        var up = 0;
-        for (var i = parts.length - 1; i >= 0; i--) {
-          var last = parts[i];
-          if (last === '.') {
-            parts.splice(i, 1);
-          } else if (last === '..') {
-            parts.splice(i, 1);
-            up++;
-          } else if (up) {
-            parts.splice(i, 1);
-            up--;
-          }
-        }
-        // if the path is allowed to go above the root, restore leading ..s
-        if (allowAboveRoot) {
-          for (; up; up--) {
-            parts.unshift('..');
-          }
-        }
-        return parts;
-      },
-  normalize:(path) => {
-        var isAbsolute = PATH.isAbs(path),
-            trailingSlash = path.slice(-1) === '/';
-        // Normalize the path
-        path = PATH.normalizeArray(path.split('/').filter((p) => !!p), !isAbsolute).join('/');
-        if (!path && !isAbsolute) {
-          path = '.';
-        }
-        if (path && trailingSlash) {
-          path += '/';
-        }
-        return (isAbsolute ? '/' : '') + path;
-      },
-  dirname:(path) => {
-        var result = PATH.splitPath(path),
-            root = result[0],
-            dir = result[1];
-        if (!root && !dir) {
-          // No dirname whatsoever
-          return '.';
-        }
-        if (dir) {
-          // It has a dirname, strip trailing slash
-          dir = dir.slice(0, -1);
-        }
-        return root + dir;
-      },
-  basename:(path) => path && path.match(/([^\/]+|\/)\/*$/)[1],
-join:(...paths) => PATH.normalize(paths.join('/')),
-join2:(l, r) => PATH.normalize(l + '/' + r),
-};
-
-var initRandomFill = () => {
-    // This block is not needed on v19+ since crypto.getRandomValues is builtin
-    if (ENVIRONMENT_IS_NODE) {
-      var nodeCrypto = require('node:crypto');
-      return (view) => nodeCrypto.randomFillSync(view);
-    }
-
-    return (view) => crypto.getRandomValues(view);
-  };
-var randomFill = (view) => {
-    // Lazily init on the first invocation.
-    (randomFill = initRandomFill())(view);
-  };
-
-
-
-var PATH_FS = {
-resolve:(...args) => {
-      var resolvedPath = '',
-        resolvedAbsolute = false;
-      for (var i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
-        var path = (i >= 0) ? args[i] : FS.cwd();
-        // Skip empty and invalid entries
-        if (typeof path != 'string') {
-          throw new TypeError('Arguments to path.resolve must be strings');
-        } else if (!path) {
-          return ''; // an invalid portion invalidates the whole thing
-        }
-        resolvedPath = path + '/' + resolvedPath;
-        resolvedAbsolute = PATH.isAbs(path);
-      }
-      // At this point the path should be resolved to a full absolute path, but
-      // handle relative paths to be safe (might happen when process.cwd() fails)
-      resolvedPath = PATH.normalizeArray(resolvedPath.split('/').filter((p) => !!p), !resolvedAbsolute).join('/');
-      return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
-    },
-relative:(from, to) => {
-      from = PATH_FS.resolve(from).slice(1);
-      to = PATH_FS.resolve(to).slice(1);
-      function trim(arr) {
-        var start = 0;
-        for (; start < arr.length; start++) {
-          if (arr[start] !== '') break;
-        }
-        var end = arr.length - 1;
-        for (; end >= 0; end--) {
-          if (arr[end] !== '') break;
-        }
-        if (start > end) return [];
-        return arr.slice(start, end - start + 1);
-      }
-      var fromParts = trim(from.split('/'));
-      var toParts = trim(to.split('/'));
-      var length = Math.min(fromParts.length, toParts.length);
-      var samePartsLength = length;
-      for (var i = 0; i < length; i++) {
-        if (fromParts[i] !== toParts[i]) {
-          samePartsLength = i;
-          break;
-        }
-      }
-      var outputParts = [];
-      for (var i = samePartsLength; i < fromParts.length; i++) {
-        outputParts.push('..');
-      }
-      outputParts = outputParts.concat(toParts.slice(samePartsLength));
-      return outputParts.join('/');
-    },
-};
-
-
-
-var FS_stdin_getChar_buffer = [];
-
-var lengthBytesUTF8 = (str) => {
-    var len = 0;
-    for (var i = 0; i < str.length; ++i) {
-      // Gotcha: charCodeAt returns a 16-bit word that is a UTF-16 encoded code
-      // unit, not a Unicode code point of the character! So decode
-      // UTF16->UTF32->UTF8.
-      // See http://unicode.org/faq/utf_bom.html#utf16-3
-      var c = str.charCodeAt(i); // possibly a lead surrogate
-      if (c <= 0x7F) {
-        len++;
-      } else if (c <= 0x7FF) {
-        len += 2;
-      } else if (c >= 0xD800 && c <= 0xDFFF) {
-        len += 4; ++i;
-      } else {
-        len += 3;
-      }
-    }
-    return len;
-  };
-
-var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
-    assert(typeof str === 'string', `stringToUTF8Array expects a string (got ${typeof str})`);
-    // Parameter maxBytesToWrite is not optional. Negative values, 0, null,
-    // undefined and false each don't write out any bytes.
-    if (!(maxBytesToWrite > 0))
-      return 0;
-
-    var startIdx = outIdx;
-    var endIdx = outIdx + maxBytesToWrite - 1; // -1 for string null terminator.
-    for (var i = 0; i < str.length; ++i) {
-      // For UTF8 byte structure, see http://en.wikipedia.org/wiki/UTF-8#Description
-      // and https://www.ietf.org/rfc/rfc2279.txt
-      // and https://tools.ietf.org/html/rfc3629
-      var u = str.codePointAt(i);
-      if (u <= 0x7F) {
-        if (outIdx >= endIdx) break;
-        heap[outIdx++] = u;
-      } else if (u <= 0x7FF) {
-        if (outIdx + 1 >= endIdx) break;
-        heap[outIdx++] = 0xC0 | (u >> 6);
-        heap[outIdx++] = 0x80 | (u & 63);
-      } else if (u <= 0xFFFF) {
-        if (outIdx + 2 >= endIdx) break;
-        heap[outIdx++] = 0xE0 | (u >> 12);
-        heap[outIdx++] = 0x80 | ((u >> 6) & 63);
-        heap[outIdx++] = 0x80 | (u & 63);
-      } else {
-        if (outIdx + 3 >= endIdx) break;
-        if (u > 0x10FFFF) warnOnce('Invalid Unicode code point ' + ptrToString(u) + ' encountered when serializing a JS string to a UTF-8 string in wasm memory! (Valid unicode code points should be in range 0-0x10FFFF).');
-        heap[outIdx++] = 0xF0 | (u >> 18);
-        heap[outIdx++] = 0x80 | ((u >> 12) & 63);
-        heap[outIdx++] = 0x80 | ((u >> 6) & 63);
-        heap[outIdx++] = 0x80 | (u & 63);
-        // Gotcha: if codePoint is over 0xFFFF, it is represented as a surrogate pair in UTF-16.
-        // We need to manually skip over the second code unit for correct iteration.
-        i++;
-      }
-    }
-    // Null-terminate the pointer to the buffer.
-    heap[outIdx] = 0;
-    return outIdx - startIdx;
-  };
-/** @type {function(string, boolean=, number=)} */
-  var intArrayFromString = (stringy, dontAddNull, length) => {
-      var len = length > 0 ? length : lengthBytesUTF8(stringy)+1;
-      var u8array = new Array(len);
-      var numBytesWritten = stringToUTF8Array(stringy, u8array, 0, u8array.length);
-      if (dontAddNull) u8array.length = numBytesWritten;
-      return u8array;
-    };
-  var FS_stdin_getChar = () => {
-      if (!FS_stdin_getChar_buffer.length) {
-        var result = null;
-        if (ENVIRONMENT_IS_NODE) {
-          // we will read data by chunks of BUFSIZE
-          var BUFSIZE = 256;
-          var buf = Buffer.alloc(BUFSIZE);
-          var bytesRead = 0;
-  
-          // For some reason we must suppress a closure warning here, even though
-          // fd definitely exists on process.stdin, and is even the proper way to
-          // get the fd of stdin,
-          // https://github.com/nodejs/help/issues/2136#issuecomment-523649904
-          // This started to happen after moving this logic out of library_tty.js,
-          // so it is related to the surrounding code in some unclear manner.
-          /** @suppress {missingProperties} */
-          var fd = process.stdin.fd;
-  
-          try {
-            bytesRead = fs.readSync(fd, buf, 0, BUFSIZE);
-          } catch(e) {
-            // Cross-platform differences: on Windows, reading EOF throws an
-            // exception, but on other OSes, reading EOF returns 0. Uniformize
-            // behavior by treating the EOF exception to return 0.
-            if (e.toString().includes('EOF')) bytesRead = 0;
-            else throw e;
-          }
-  
-          if (bytesRead > 0) {
-            result = buf.slice(0, bytesRead).toString('utf-8');
-          }
-        } else
-        if (globalThis.window?.prompt) {
-          // Browser.
-          result = window.prompt('Input: ');  // returns null on cancel
-          if (result !== null) {
-            result += '\n';
-          }
-        } else
-        {}
-        if (!result) {
-          return null;
-        }
-        FS_stdin_getChar_buffer = intArrayFromString(result, true);
-      }
-      return FS_stdin_getChar_buffer.shift();
-    };
-  var TTY = {
-  ttys:[],
-  init() {
-        // https://github.com/emscripten-core/emscripten/pull/1555
-        // if (ENVIRONMENT_IS_NODE) {
-        //   // currently, FS.init does not distinguish if process.stdin is a file or TTY
-        //   // device, it always assumes it's a TTY device. because of this, we're forcing
-        //   // process.stdin to UTF8 encoding to at least make stdin reading compatible
-        //   // with text files until FS.init can be refactored.
-        //   process.stdin.setEncoding('utf8');
-        // }
-      },
-  shutdown() {
-        // https://github.com/emscripten-core/emscripten/pull/1555
-        // if (ENVIRONMENT_IS_NODE) {
-        //   // inolen: any idea as to why node -e 'process.stdin.read()' wouldn't exit immediately (with process.stdin being a tty)?
-        //   // isaacs: because now it's reading from the stream, you've expressed interest in it, so that read() kicks off a _read() which creates a ReadReq operation
-        //   // inolen: I thought read() in that case was a synchronous operation that just grabbed some amount of buffered data if it exists?
-        //   // isaacs: it is. but it also triggers a _read() call, which calls readStart() on the handle
-        //   // isaacs: do process.stdin.pause() and i'd think it'd probably close the pending call
-        //   process.stdin.pause();
-        // }
-      },
-  register(dev, ops) {
-        TTY.ttys[dev] = { input: [], output: [], ops: ops };
-        FS.registerDevice(dev, TTY.stream_ops);
-      },
-  stream_ops:{
-  open(stream) {
-          var tty = TTY.ttys[stream.node.rdev];
-          if (!tty) {
-            throw new FS.ErrnoError(43);
-          }
-          stream.tty = tty;
-          stream.seekable = false;
-        },
-  close(stream) {
-          // flush any pending line data
-          stream.tty.ops.fsync(stream.tty);
-        },
-  fsync(stream) {
-          stream.tty.ops.fsync(stream.tty);
-        },
-  read(stream, buffer, offset, length, pos /* ignored */) {
-          if (!stream.tty || !stream.tty.ops.get_char) {
-            throw new FS.ErrnoError(60);
-          }
-          var bytesRead = 0;
-          for (var i = 0; i < length; i++) {
-            var result;
-            try {
-              result = stream.tty.ops.get_char(stream.tty);
-            } catch (e) {
-              throw new FS.ErrnoError(29);
-            }
-            if (result === undefined && bytesRead === 0) {
-              throw new FS.ErrnoError(6);
-            }
-            if (result === null || result === undefined) break;
-            bytesRead++;
-            buffer[offset+i] = result;
-          }
-          if (bytesRead) {
-            stream.node.atime = Date.now();
-          }
-          return bytesRead;
-        },
-  write(stream, buffer, offset, length, pos) {
-          if (!stream.tty || !stream.tty.ops.put_char) {
-            throw new FS.ErrnoError(60);
-          }
-          try {
-            for (var i = 0; i < length; i++) {
-              stream.tty.ops.put_char(stream.tty, buffer[offset+i]);
-            }
-          } catch (e) {
-            throw new FS.ErrnoError(29);
-          }
-          if (length) {
-            stream.node.mtime = stream.node.ctime = Date.now();
-          }
-          return i;
-        },
-  },
-  default_tty_ops:{
-  get_char(tty) {
-          return FS_stdin_getChar();
-        },
-  put_char(tty, val) {
-          if (val === null || val === 10) {
-            out(UTF8ArrayToString(tty.output));
-            tty.output = [];
-          } else {
-            if (val != 0) tty.output.push(val); // val == 0 would cut text output off in the middle.
-          }
-        },
-  fsync(tty) {
-          if (tty.output?.length > 0) {
-            out(UTF8ArrayToString(tty.output));
-            tty.output = [];
-          }
-        },
-  ioctl_tcgets(tty) {
-          // typical setting
-          return {
-            c_iflag: 25856,
-            c_oflag: 5,
-            c_cflag: 191,
-            c_lflag: 35387,
-            c_cc: [
-              0x03, 0x1c, 0x7f, 0x15, 0x04, 0x00, 0x01, 0x00, 0x11, 0x13, 0x1a, 0x00,
-              0x12, 0x0f, 0x17, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
-          };
-        },
-  ioctl_tcsets(tty, optional_actions, data) {
-          // currently just ignore
-          return 0;
-        },
-  ioctl_tiocgwinsz(tty) {
-          return [24, 80];
-        },
-  },
-  default_tty1_ops:{
-  put_char(tty, val) {
-          if (val === null || val === 10) {
-            err(UTF8ArrayToString(tty.output));
-            tty.output = [];
-          } else {
-            if (val != 0) tty.output.push(val);
-          }
-        },
-  fsync(tty) {
-          if (tty.output?.length > 0) {
-            err(UTF8ArrayToString(tty.output));
-            tty.output = [];
-          }
-        },
-  },
-  };
-  
-  
-  var zeroMemory = (ptr, size) => HEAPU8.fill(0, ptr, ptr + size);
-  
-  var alignMemory = (size, alignment) => {
-      assert(alignment, "alignment argument is required");
-      return Math.ceil(size / alignment) * alignment;
-    };
-  var mmapAlloc = (size) => {
-      size = alignMemory(size, 65536);
-      var ptr = _emscripten_builtin_memalign(65536, size);
-      if (ptr) zeroMemory(ptr, size);
-      return ptr;
-    };
-  var MEMFS = {
-  ops_table:null,
-  mount(mount) {
-        return MEMFS.createNode(null, '/', 16895, 0);
-      },
-  createNode(parent, name, mode, dev) {
-        if (FS.isBlkdev(mode) || FS.isFIFO(mode)) {
-          // not supported
-          throw new FS.ErrnoError(63);
-        }
-        MEMFS.ops_table ||= {
-          dir: {
-            node: {
-              getattr: MEMFS.node_ops.getattr,
-              setattr: MEMFS.node_ops.setattr,
-              lookup: MEMFS.node_ops.lookup,
-              mknod: MEMFS.node_ops.mknod,
-              rename: MEMFS.node_ops.rename,
-              unlink: MEMFS.node_ops.unlink,
-              rmdir: MEMFS.node_ops.rmdir,
-              readdir: MEMFS.node_ops.readdir,
-              symlink: MEMFS.node_ops.symlink
-            },
-            stream: {
-              llseek: MEMFS.stream_ops.llseek
-            }
-          },
-          file: {
-            node: {
-              getattr: MEMFS.node_ops.getattr,
-              setattr: MEMFS.node_ops.setattr
-            },
-            stream: {
-              llseek: MEMFS.stream_ops.llseek,
-              read: MEMFS.stream_ops.read,
-              write: MEMFS.stream_ops.write,
-              mmap: MEMFS.stream_ops.mmap,
-              msync: MEMFS.stream_ops.msync
-            }
-          },
-          link: {
-            node: {
-              getattr: MEMFS.node_ops.getattr,
-              setattr: MEMFS.node_ops.setattr,
-              readlink: MEMFS.node_ops.readlink
-            },
-            stream: {}
-          },
-          chrdev: {
-            node: {
-              getattr: MEMFS.node_ops.getattr,
-              setattr: MEMFS.node_ops.setattr
-            },
-            stream: FS.chrdev_stream_ops
-          }
-        };
-        var node = FS.createNode(parent, name, mode, dev);
-        if (FS.isDir(node.mode)) {
-          node.node_ops = MEMFS.ops_table.dir.node;
-          node.stream_ops = MEMFS.ops_table.dir.stream;
-          node.contents = {};
-        } else if (FS.isFile(node.mode)) {
-          node.node_ops = MEMFS.ops_table.file.node;
-          node.stream_ops = MEMFS.ops_table.file.stream;
-          node.usedBytes = 0; // The actual number of bytes used in the typed array, as opposed to contents.length which gives the whole capacity.
-          // When the byte data of the file is populated, this will point to either a typed array, or a normal JS array. Typed arrays are preferred
-          // for performance, and used by default. However, typed arrays are not resizable like normal JS arrays are, so there is a small disk size
-          // penalty involved for appending file writes that continuously grow a file similar to std::vector capacity vs used -scheme.
-          node.contents = null; 
-        } else if (FS.isLink(node.mode)) {
-          node.node_ops = MEMFS.ops_table.link.node;
-          node.stream_ops = MEMFS.ops_table.link.stream;
-        } else if (FS.isChrdev(node.mode)) {
-          node.node_ops = MEMFS.ops_table.chrdev.node;
-          node.stream_ops = MEMFS.ops_table.chrdev.stream;
-        }
-        node.atime = node.mtime = node.ctime = Date.now();
-        // add the new node to the parent
-        if (parent) {
-          parent.contents[name] = node;
-          parent.atime = parent.mtime = parent.ctime = node.atime;
-        }
-        return node;
-      },
-  getFileDataAsTypedArray(node) {
-        if (!node.contents) return new Uint8Array(0);
-        if (node.contents.subarray) return node.contents.subarray(0, node.usedBytes); // Make sure to not return excess unused bytes.
-        return new Uint8Array(node.contents);
-      },
-  expandFileStorage(node, newCapacity) {
-        var prevCapacity = node.contents ? node.contents.length : 0;
-        if (prevCapacity >= newCapacity) return; // No need to expand, the storage was already large enough.
-        // Don't expand strictly to the given requested limit if it's only a very small increase, but instead geometrically grow capacity.
-        // For small filesizes (<1MB), perform size*2 geometric increase, but for large sizes, do a much more conservative size*1.125 increase to
-        // avoid overshooting the allocation cap by a very large margin.
-        var CAPACITY_DOUBLING_MAX = 1024 * 1024;
-        newCapacity = Math.max(newCapacity, (prevCapacity * (prevCapacity < CAPACITY_DOUBLING_MAX ? 2.0 : 1.125)) >>> 0);
-        if (prevCapacity != 0) newCapacity = Math.max(newCapacity, 256); // At minimum allocate 256b for each file when expanding.
-        var oldContents = node.contents;
-        node.contents = new Uint8Array(newCapacity); // Allocate new storage.
-        if (node.usedBytes > 0) node.contents.set(oldContents.subarray(0, node.usedBytes), 0); // Copy old data over to the new storage.
-      },
-  resizeFileStorage(node, newSize) {
-        if (node.usedBytes == newSize) return;
-        if (newSize == 0) {
-          node.contents = null; // Fully decommit when requesting a resize to zero.
-          node.usedBytes = 0;
-        } else {
-          var oldContents = node.contents;
-          node.contents = new Uint8Array(newSize); // Allocate new storage.
-          if (oldContents) {
-            node.contents.set(oldContents.subarray(0, Math.min(newSize, node.usedBytes))); // Copy old data over to the new storage.
-          }
-          node.usedBytes = newSize;
-        }
-      },
-  node_ops:{
-  getattr(node) {
-          var attr = {};
-          // device numbers reuse inode numbers.
-          attr.dev = FS.isChrdev(node.mode) ? node.id : 1;
-          attr.ino = node.id;
-          attr.mode = node.mode;
-          attr.nlink = 1;
-          attr.uid = 0;
-          attr.gid = 0;
-          attr.rdev = node.rdev;
-          if (FS.isDir(node.mode)) {
-            attr.size = 4096;
-          } else if (FS.isFile(node.mode)) {
-            attr.size = node.usedBytes;
-          } else if (FS.isLink(node.mode)) {
-            attr.size = node.link.length;
-          } else {
-            attr.size = 0;
-          }
-          attr.atime = new Date(node.atime);
-          attr.mtime = new Date(node.mtime);
-          attr.ctime = new Date(node.ctime);
-          // NOTE: In our implementation, st_blocks = Math.ceil(st_size/st_blksize),
-          //       but this is not required by the standard.
-          attr.blksize = 4096;
-          attr.blocks = Math.ceil(attr.size / attr.blksize);
-          return attr;
-        },
-  setattr(node, attr) {
-          for (const key of ["mode", "atime", "mtime", "ctime"]) {
-            if (attr[key] != null) {
-              node[key] = attr[key];
-            }
-          }
-          if (attr.size !== undefined) {
-            MEMFS.resizeFileStorage(node, attr.size);
-          }
-        },
-  lookup(parent, name) {
-          throw new FS.ErrnoError(44);
-        },
-  mknod(parent, name, mode, dev) {
-          return MEMFS.createNode(parent, name, mode, dev);
-        },
-  rename(old_node, new_dir, new_name) {
-          var new_node;
-          try {
-            new_node = FS.lookupNode(new_dir, new_name);
-          } catch (e) {}
-          if (new_node) {
-            if (FS.isDir(old_node.mode)) {
-              // if we're overwriting a directory at new_name, make sure it's empty.
-              for (var i in new_node.contents) {
-                throw new FS.ErrnoError(55);
-              }
-            }
-            FS.hashRemoveNode(new_node);
-          }
-          // do the internal rewiring
-          delete old_node.parent.contents[old_node.name];
-          new_dir.contents[new_name] = old_node;
-          old_node.name = new_name;
-          new_dir.ctime = new_dir.mtime = old_node.parent.ctime = old_node.parent.mtime = Date.now();
-        },
-  unlink(parent, name) {
-          delete parent.contents[name];
-          parent.ctime = parent.mtime = Date.now();
-        },
-  rmdir(parent, name) {
-          var node = FS.lookupNode(parent, name);
-          for (var i in node.contents) {
-            throw new FS.ErrnoError(55);
-          }
-          delete parent.contents[name];
-          parent.ctime = parent.mtime = Date.now();
-        },
-  readdir(node) {
-          return ['.', '..', ...Object.keys(node.contents)];
-        },
-  symlink(parent, newname, oldpath) {
-          var node = MEMFS.createNode(parent, newname, 0o777 | 40960, 0);
-          node.link = oldpath;
-          return node;
-        },
-  readlink(node) {
-          if (!FS.isLink(node.mode)) {
-            throw new FS.ErrnoError(28);
-          }
-          return node.link;
-        },
-  },
-  stream_ops:{
-  read(stream, buffer, offset, length, position) {
-          var contents = stream.node.contents;
-          if (position >= stream.node.usedBytes) return 0;
-          var size = Math.min(stream.node.usedBytes - position, length);
-          assert(size >= 0);
-          if (size > 8 && contents.subarray) { // non-trivial, and typed array
-            buffer.set(contents.subarray(position, position + size), offset);
-          } else {
-            for (var i = 0; i < size; i++) buffer[offset + i] = contents[position + i];
-          }
-          return size;
-        },
-  write(stream, buffer, offset, length, position, canOwn) {
-          // The data buffer should be a typed array view
-          assert(!(buffer instanceof ArrayBuffer));
-          // If the buffer is located in main memory (HEAP), and if
-          // memory can grow, we can't hold on to references of the
-          // memory buffer, as they may get invalidated. That means we
-          // need to copy its contents.
-          if (buffer.buffer === HEAP8.buffer) {
-            canOwn = false;
-          }
-  
-          if (!length) return 0;
-          var node = stream.node;
-          node.mtime = node.ctime = Date.now();
-  
-          if (buffer.subarray && (!node.contents || node.contents.subarray)) { // This write is from a typed array to a typed array?
-            if (canOwn) {
-              assert(position === 0, 'canOwn must imply no weird position inside the file');
-              node.contents = buffer.subarray(offset, offset + length);
-              node.usedBytes = length;
-              return length;
-            } else if (node.usedBytes === 0 && position === 0) { // If this is a simple first write to an empty file, do a fast set since we don't need to care about old data.
-              node.contents = buffer.slice(offset, offset + length);
-              node.usedBytes = length;
-              return length;
-            } else if (position + length <= node.usedBytes) { // Writing to an already allocated and used subrange of the file?
-              node.contents.set(buffer.subarray(offset, offset + length), position);
-              return length;
-            }
-          }
-  
-          // Appending to an existing file and we need to reallocate, or source data did not come as a typed array.
-          MEMFS.expandFileStorage(node, position+length);
-          if (node.contents.subarray && buffer.subarray) {
-            // Use typed array write which is available.
-            node.contents.set(buffer.subarray(offset, offset + length), position);
-          } else {
-            for (var i = 0; i < length; i++) {
-             node.contents[position + i] = buffer[offset + i]; // Or fall back to manual write if not.
-            }
-          }
-          node.usedBytes = Math.max(node.usedBytes, position + length);
-          return length;
-        },
-  llseek(stream, offset, whence) {
-          var position = offset;
-          if (whence === 1) {
-            position += stream.position;
-          } else if (whence === 2) {
-            if (FS.isFile(stream.node.mode)) {
-              position += stream.node.usedBytes;
-            }
-          }
-          if (position < 0) {
-            throw new FS.ErrnoError(28);
-          }
-          return position;
-        },
-  mmap(stream, length, position, prot, flags) {
-          if (!FS.isFile(stream.node.mode)) {
-            throw new FS.ErrnoError(43);
-          }
-          var ptr;
-          var allocated;
-          var contents = stream.node.contents;
-          // Only make a new copy when MAP_PRIVATE is specified.
-          if (!(flags & 2) && contents && contents.buffer === HEAP8.buffer) {
-            // We can't emulate MAP_SHARED when the file is not backed by the
-            // buffer we're mapping to (e.g. the HEAP buffer).
-            allocated = false;
-            ptr = contents.byteOffset;
-          } else {
-            allocated = true;
-            ptr = mmapAlloc(length);
-            if (!ptr) {
-              throw new FS.ErrnoError(48);
-            }
-            if (contents) {
-              // Try to avoid unnecessary slices.
-              if (position > 0 || position + length < contents.length) {
-                if (contents.subarray) {
-                  contents = contents.subarray(position, position + length);
-                } else {
-                  contents = Array.prototype.slice.call(contents, position, position + length);
-                }
-              }
-              HEAP8.set(contents, ptr);
-            }
-          }
-          return { ptr, allocated };
-        },
-  msync(stream, buffer, offset, length, mmapFlags) {
-          MEMFS.stream_ops.write(stream, buffer, 0, length, offset, false);
-          // should we check if bytesWritten and length are the same?
-          return 0;
-        },
-  },
-  };
-  
-  var FS_modeStringToFlags = (str) => {
-      var flagModes = {
-        'r': 0,
-        'r+': 2,
-        'w': 512 | 64 | 1,
-        'w+': 512 | 64 | 2,
-        'a': 1024 | 64 | 1,
-        'a+': 1024 | 64 | 2,
-      };
-      var flags = flagModes[str];
-      if (typeof flags == 'undefined') {
-        throw new Error(`Unknown file open mode: ${str}`);
-      }
-      return flags;
-    };
-  
-  var FS_getMode = (canRead, canWrite) => {
-      var mode = 0;
-      if (canRead) mode |= 292 | 73;
-      if (canWrite) mode |= 146;
-      return mode;
-    };
-  
-  
-  
-  
-  var strError = (errno) => UTF8ToString(_strerror(errno));
-  
   var ERRNO_CODES = {
       'EPERM': 63,
       'ENOENT': 44,
@@ -3545,30 +3819,12 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       'EOWNERDEAD': 62,
       'ESTRPIPE': 135,
     };
-  
-  var asyncLoad = async (url) => {
-      var arrayBuffer = await readAsync(url);
-      assert(arrayBuffer, `Loading data file "${url}" failed (no arrayBuffer).`);
-      return new Uint8Array(arrayBuffer);
-    };
-  
-  
+  const FS_MAX_OPEN_FDS = 4096;
   var FS_createDataFile = (...args) => FS.createDataFile(...args);
-  
-  var getUniqueRunDependency = (id) => {
-      var orig = id;
-      while (1) {
-        if (!runDependencyTracking[id]) return id;
-        id = orig + Math.random();
-      }
-    };
-  
-  
-  
   var preloadPlugins = [];
   var FS_handledByPreloadPlugin = async (byteArray, fullname) => {
       // Ensure plugins are ready.
-      if (typeof Browser != 'undefined') Browser.init();
+      if (typeof Browser !== 'undefined') Browser.init();
   
       for (var plugin of preloadPlugins) {
         if (plugin['canHandle'](fullname)) {
@@ -3580,31 +3836,814 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       // byteArray.
       return byteArray;
     };
-  var FS_preloadFile = async (parent, name, url, canRead, canWrite, dontCreateFile, canOwn, preFinish) => {
-      // TODO we should allow people to just pass in a complete filename instead
-      // of parent and name being that we just join them anyways
-      var fullname = name ? PATH_FS.resolve(PATH.join2(parent, name)) : parent;
-      var dep = getUniqueRunDependency(`cp ${fullname}`); // might have several active requests for the same fullname
-      addRunDependency(dep);
-  
-      try {
-        var byteArray = url;
-        if (typeof url == 'string') {
-          byteArray = await asyncLoad(url);
+  var PATH = {
+  isAbs:(path) => path.charAt(0) === '/',
+  splitPath:(filename) => {
+        var splitPathRe = /^(\/?|)([\s\S]*?)((?:\.{1,2}|[^\/]+?|)(\.[^.\/]*|))(?:[\/]*)$/;
+        return splitPathRe.exec(filename).slice(1);
+      },
+  normalizeArray:(parts, allowAboveRoot) => {
+        // if the path tries to go above the root, `up` ends up > 0
+        var up = 0;
+        for (var i = parts.length - 1; i >= 0; i--) {
+          var last = parts[i];
+          if (last === '.') {
+            parts.splice(i, 1);
+          } else if (last === '..') {
+            parts.splice(i, 1);
+            up++;
+          } else if (up) {
+            parts.splice(i, 1);
+            up--;
+          }
         }
-  
-        byteArray = await FS_handledByPreloadPlugin(byteArray, fullname);
-        preFinish?.();
-        if (!dontCreateFile) {
-          FS_createDataFile(parent, name, byteArray, canRead, canWrite, canOwn);
+        // if the path is allowed to go above the root, restore leading ..s
+        if (allowAboveRoot) {
+          for (; up; up--) {
+            parts.unshift('..');
+          }
         }
-      } finally {
-        removeRunDependency(dep);
+        return parts;
+      },
+  normalize:(path) => {
+        var isAbsolute = PATH.isAbs(path),
+            trailingSlash = path.slice(-1) === '/';
+        // Normalize the path
+        path = PATH.normalizeArray(path.split('/').filter((p) => !!p), !isAbsolute).join('/');
+        if (!path && !isAbsolute) {
+          path = '.';
+        }
+        if (path && trailingSlash) {
+          path += '/';
+        }
+        return (isAbsolute ? '/' : '') + path;
+      },
+  dirname:(path) => {
+        var result = PATH.splitPath(path),
+            root = result[0],
+            dir = result[1];
+        if (!root && !dir) {
+          // No dirname whatsoever
+          return '.';
+        }
+        if (dir) {
+          // It has a dirname, strip trailing slash
+          dir = dir.slice(0, -1);
+        }
+        return root + dir;
+      },
+  basename:(path) => path && path.match(/([^\/]+|\/)\/*$/)[1],
+join:(...paths) => PATH.normalize(paths.join('/')),
+join2:(l, r) => PATH.normalize(l + '/' + r),
+};
+var PATH_FS = {
+resolve:(...args) => {
+      var resolvedPath = '',
+        resolvedAbsolute = false;
+      for (var i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+        var path = (i >= 0) ? args[i] : FS.cwd();
+        // Skip empty and invalid entries
+        if (typeof path !== 'string') {
+          throw new TypeError('Arguments to path.resolve must be strings');
+        } else if (!path) {
+          return ''; // an invalid portion invalidates the whole thing
+        }
+        resolvedPath = path + '/' + resolvedPath;
+        resolvedAbsolute = PATH.isAbs(path);
       }
+      // At this point the path should be resolved to a full absolute path, but
+      // handle relative paths to be safe (might happen when process.cwd() fails)
+      resolvedPath = PATH.normalizeArray(resolvedPath.split('/').filter((p) => !!p), !resolvedAbsolute).join('/');
+      return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
+    },
+relative:(from, to) => {
+      from = PATH_FS.resolve(from).slice(1);
+      to = PATH_FS.resolve(to).slice(1);
+      function trim(arr) {
+        var start = 0;
+        for (; start < arr.length; start++) {
+          if (arr[start] !== '') break;
+        }
+        var end = arr.length - 1;
+        for (; end >= 0; end--) {
+          if (arr[end] !== '') break;
+        }
+        if (start > end) return [];
+        return arr.slice(start, end - start + 1);
+      }
+      var fromParts = trim(from.split('/'));
+      var toParts = trim(to.split('/'));
+      var length = Math.min(fromParts.length, toParts.length);
+      var samePartsLength = length;
+      for (var i = 0; i < length; i++) {
+        if (fromParts[i] !== toParts[i]) {
+          samePartsLength = i;
+          break;
+        }
+      }
+      var outputParts = [];
+      for (var i = samePartsLength; i < fromParts.length; i++) {
+        outputParts.push('..');
+      }
+      outputParts = outputParts.concat(toParts.slice(samePartsLength));
+      return outputParts.join('/');
+    },
+};
+var dependenciesPromise = null;
+var dependenciesPromiseResolve = null;
+var resolveRunDependencies = async () => dependenciesPromise;
+var runDependencies = 0;
+var runDependencyTracking = {
+};
+var runDependencyWatcher = null;
+var removeRunDependency = (id) => {
+    runDependencies--;
+
+    Module['monitorRunDependencies']?.(runDependencies);
+
+    assert(id, 'removeRunDependency requires an ID');
+    assert(runDependencyTracking[id]);
+    delete runDependencyTracking[id];
+    if (!runDependencies) {
+      if (runDependencyWatcher !== null) {
+        clearInterval(runDependencyWatcher);
+        runDependencyWatcher = null;
+      }
+      dependenciesPromiseResolve();
+    }
+  };
+var addRunDependency = (id) => {
+    if (!runDependencies) {
+      dependenciesPromise = new Promise((resolve) => dependenciesPromiseResolve = resolve);
+    }
+    runDependencies++;
+
+    Module['monitorRunDependencies']?.(runDependencies);
+
+    assert(id, 'addRunDependency requires an ID')
+    assert(!runDependencyTracking[id]);
+    runDependencyTracking[id] = 1;
+    if (!runDependencyWatcher && globalThis.setInterval) {
+      // Check for missing dependencies every few seconds
+      runDependencyWatcher = setInterval(() => {
+        if (ABORT) {
+          clearInterval(runDependencyWatcher);
+          runDependencyWatcher = null;
+          return;
+        }
+        var shown = false;
+        for (var dep in runDependencyTracking) {
+          if (!shown) {
+            shown = true;
+            err('still waiting on run dependencies:');
+          }
+          err(`dependency: ${dep}`);
+        }
+        if (shown) {
+          err('(end of list)');
+        }
+      }, 10_000);
+      // Prevent this timer from keeping the runtime alive if nothing
+      // else is.
+      runDependencyWatcher.unref?.()
+    }
+  };
+var asyncLoad = async (url) => {
+    var arrayBuffer = await readAsync(url);
+    assert(arrayBuffer, `Loading data file "${url}" failed (no arrayBuffer).`);
+    return new Uint8Array(arrayBuffer);
+  };
+var getUniqueRunDependency = (id) => {
+    var orig = id;
+    while (1) {
+      if (!runDependencyTracking[id]) return id;
+      id = orig + Math.random();
+    }
+  };
+var FS_preloadFile = async (parent, name, url, canRead = undefined, canWrite = undefined, dontCreateFile = undefined, canOwn = undefined, preFinish = undefined) => {
+    // TODO we should allow people to just pass in a complete filename instead
+    // of parent and name being that we just join them anyways
+    var fullname = name ? PATH_FS.resolve(PATH.join2(parent, name)) : parent;
+    var dep = getUniqueRunDependency(`cp ${fullname}`); // might have several active requests for the same fullname
+    addRunDependency(dep);
+
+    try {
+      var byteArray = url;
+      if (typeof url === 'string') {
+        byteArray = await asyncLoad(url);
+      }
+
+      byteArray = await FS_handledByPreloadPlugin(byteArray, fullname);
+      preFinish?.();
+      if (!dontCreateFile) {
+        FS_createDataFile(parent, name, byteArray, canRead, canWrite, canOwn);
+      }
+    } finally {
+      removeRunDependency(dep);
+    }
+  };
+var FS_createPreloadedFile = (parent, name, url, canRead = undefined, canWrite = undefined, onload = undefined, onerror = undefined, dontCreateFile = undefined, canOwn = undefined, preFinish = undefined) => {
+    FS_preloadFile(parent, name, url, canRead, canWrite, dontCreateFile, canOwn, preFinish).then(onload).catch(onerror);
+  };
+var lengthBytesUTF8 = (str) => {
+    var len = 0;
+    for (var i = 0; i < str.length; ++i) {
+      var u = str.codePointAt(i);
+      if (u <= 0x7F) {
+        len++;
+      } else if (u <= 0x7FF) {
+        len += 2;
+      } else if (u <= 0xFFFF) {
+        len += 3;
+      } else {
+        len += 4;
+        // Gotcha: if codePoint is over 0xFFFF, it is represented as a surrogate pair in UTF-16.
+        // We need to manually skip over the second code unit for correct iteration.
+        i++;
+      }
+    }
+    return len;
+  };
+var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
+    assert(typeof str === 'string', `stringToUTF8Array expects a string (got ${typeof str})`);
+    // Parameter maxBytesToWrite is not optional. Negative values, 0, null,
+    // undefined and false each don't write out any bytes.
+    if (!(maxBytesToWrite > 0))
+      return 0;
+
+    var startIdx = outIdx;
+    var endIdx = outIdx + maxBytesToWrite - 1; // -1 for string null terminator.
+    for (var i = 0; i < str.length; ++i) {
+      // For UTF8 byte structure, see http://en.wikipedia.org/wiki/UTF-8#Description
+      // and https://www.ietf.org/rfc/rfc2279.txt
+      // and https://tools.ietf.org/html/rfc3629
+      var u = str.codePointAt(i);
+      if (u <= 0x7F) {
+        if (outIdx >= endIdx) break;
+        heap[outIdx++] = u;
+      } else if (u <= 0x7FF) {
+        if (outIdx + 1 >= endIdx) break;
+        heap[outIdx++] = 0xC0 | (u >> 6);
+        heap[outIdx++] = 0x80 | (u & 63);
+      } else if (u <= 0xFFFF) {
+        if (outIdx + 2 >= endIdx) break;
+        heap[outIdx++] = 0xE0 | (u >> 12);
+        heap[outIdx++] = 0x80 | ((u >> 6) & 63);
+        heap[outIdx++] = 0x80 | (u & 63);
+      } else {
+        if (outIdx + 3 >= endIdx) break;
+        if (u > 0x10FFFF) warnOnce(`Invalid Unicode code point ${ptrToString(u)} encountered when serializing a JS string to a UTF-8 string in wasm memory! (Valid unicode code points should be in range 0-0x10FFFF).`);
+        heap[outIdx++] = 0xF0 | (u >> 18);
+        heap[outIdx++] = 0x80 | ((u >> 12) & 63);
+        heap[outIdx++] = 0x80 | ((u >> 6) & 63);
+        heap[outIdx++] = 0x80 | (u & 63);
+        // Gotcha: if codePoint is over 0xFFFF, it is represented as a surrogate pair in UTF-16.
+        // We need to manually skip over the second code unit for correct iteration.
+        i++;
+      }
+    }
+    // Null-terminate the pointer to the buffer.
+    heap[outIdx] = 0;
+    return outIdx - startIdx;
+  };
+/** @type {function(string, boolean=, number=)} */
+  var intArrayFromString = (stringy, dontAddNull, length) => {
+      var len = length > 0 ? length : lengthBytesUTF8(stringy)+1;
+      var u8array = new Array(len);
+      var numBytesWritten = stringToUTF8Array(stringy, u8array, 0, u8array.length);
+      if (dontAddNull) u8array.length = numBytesWritten;
+      return u8array;
     };
-  var FS_createPreloadedFile = (parent, name, url, canRead, canWrite, onload, onerror, dontCreateFile, canOwn, preFinish) => {
-      FS_preloadFile(parent, name, url, canRead, canWrite, dontCreateFile, canOwn, preFinish).then(onload).catch(onerror);
+  var FS_fileDataToTypedArray = (data) => {
+      if (typeof data === 'string') {
+        data = intArrayFromString(data, true);
+      }
+      if (!data.subarray) {
+        data = new Uint8Array(data);
+      }
+      return data;
     };
+  var FS_getMode = (canRead, canWrite) => {
+      var mode = 0;
+      if (canRead) mode |= 292 | 73;
+      if (canWrite) mode |= 146;
+      return mode;
+    };
+  var FS_modeStringToFlags = (str) => {
+      if (typeof str !== 'string') return str;
+      var flagModes = {
+        'r': 0,
+        'r+': 2,
+        'w': 512 | 64 | 1,
+        'w+': 512 | 64 | 2,
+        'a': 1024 | 64 | 1,
+        'a+': 1024 | 64 | 2,
+      };
+      var flags = flagModes[str];
+      if (typeof flags === 'undefined') {
+        throw new Error(`Unknown file open mode: ${str}`);
+      }
+      return flags;
+    };
+  var alignMemory = (size, alignment) => {
+      assert(alignment, 'alignment argument is required');
+      return Math.ceil(size / alignment) * alignment;
+    };
+  var zeroMemory = (ptr, size) => HEAPU8.fill(0, ptr, ptr + size);
+  var mmapAlloc = (size) => {
+      size = alignMemory(size, 65536);
+      var ptr = _emscripten_builtin_memalign(65536, size);
+      if (ptr) zeroMemory(ptr, size);
+      return ptr;
+    };
+  var MEMFS = {
+  ops_table:null,
+  mount(mount) {
+        return MEMFS.createNode(null, '/', 16895, 0);
+      },
+  createNode(parent, name, mode, dev = undefined) {
+        if (FS.isBlkdev(mode) || FS.isFIFO(mode)) {
+          // not supported
+          throw new FS.ErrnoError(63);
+        }
+        MEMFS.ops_table ||= {
+          dir: {
+            node: {
+              getattr: MEMFS.node_ops.getattr,
+              setattr: MEMFS.node_ops.setattr,
+              lookup: MEMFS.node_ops.lookup,
+              mknod: MEMFS.node_ops.mknod,
+              rename: MEMFS.node_ops.rename,
+              unlink: MEMFS.node_ops.unlink,
+              rmdir: MEMFS.node_ops.rmdir,
+              readdir: MEMFS.node_ops.readdir,
+              symlink: MEMFS.node_ops.symlink
+            },
+            stream: {
+              llseek: MEMFS.stream_ops.llseek
+            }
+          },
+          file: {
+            node: {
+              getattr: MEMFS.node_ops.getattr,
+              setattr: MEMFS.node_ops.setattr
+            },
+            stream: {
+              llseek: MEMFS.stream_ops.llseek,
+              read: MEMFS.stream_ops.read,
+              write: MEMFS.stream_ops.write,
+              mmap: MEMFS.stream_ops.mmap,
+              msync: MEMFS.stream_ops.msync
+            }
+          },
+          link: {
+            node: {
+              getattr: MEMFS.node_ops.getattr,
+              setattr: MEMFS.node_ops.setattr,
+              readlink: MEMFS.node_ops.readlink
+            },
+            stream: {}
+          },
+          chrdev: {
+            node: {
+              getattr: MEMFS.node_ops.getattr,
+              setattr: MEMFS.node_ops.setattr
+            },
+            stream: FS.chrdev_stream_ops
+          }
+        };
+        var node = FS.createNode(parent, name, mode, dev);
+        if (FS.isDir(node.mode)) {
+          node.node_ops = MEMFS.ops_table.dir.node;
+          node.stream_ops = MEMFS.ops_table.dir.stream;
+          node.contents = {};
+        } else if (FS.isFile(node.mode)) {
+          node.node_ops = MEMFS.ops_table.file.node;
+          node.stream_ops = MEMFS.ops_table.file.stream;
+          // The actual number of bytes used in the typed array, as opposed to
+          // contents.length which gives the whole capacity.
+          node.usedBytes = 0;
+          // The byte data of the file is stored in a typed array.
+          // Note: typed arrays are not resizable like normal JS arrays are, so
+          // there is a small penalty involved for appending file writes that
+          // continuously grow a file similar to std::vector capacity vs used.
+          node.contents = MEMFS.emptyFileContents ??= new Uint8Array(0);
+        } else if (FS.isLink(node.mode)) {
+          node.node_ops = MEMFS.ops_table.link.node;
+          node.stream_ops = MEMFS.ops_table.link.stream;
+        } else if (FS.isChrdev(node.mode)) {
+          node.node_ops = MEMFS.ops_table.chrdev.node;
+          node.stream_ops = MEMFS.ops_table.chrdev.stream;
+        }
+        node.atime = node.mtime = node.ctime = Date.now();
+        // add the new node to the parent
+        if (parent) {
+          parent.contents[name] = node;
+          parent.atime = parent.mtime = parent.ctime = node.atime;
+        }
+        return node;
+      },
+  getFileDataAsTypedArray(node) {
+        assert(FS.isFile(node.mode), 'getFileDataAsTypedArray called on non-file');
+        return node.contents.subarray(0, node.usedBytes); // Make sure to not return excess unused bytes.
+      },
+  expandFileStorage(node, newCapacity) {
+        var prevCapacity = node.contents.length;
+        if (prevCapacity >= newCapacity) return; // No need to expand, the storage was already large enough.
+        // Don't expand strictly to the given requested limit if it's only a very
+        // small increase, but instead geometrically grow capacity.
+        // For small filesizes (<1MB), perform size*2 geometric increase, but for
+        // large sizes, do a much more conservative size*1.125 increase to avoid
+        // overshooting the allocation cap by a very large margin.
+        const CAPACITY_DOUBLING_MAX = 1024 * 1024;
+        newCapacity = Math.max(newCapacity, (prevCapacity * (prevCapacity < CAPACITY_DOUBLING_MAX ? 2.0 : 1.125)) >>> 0);
+        if (prevCapacity) newCapacity = Math.max(newCapacity, 256); // At minimum allocate 256b for each file when expanding.
+        var oldContents = MEMFS.getFileDataAsTypedArray(node);
+        node.contents = new Uint8Array(newCapacity); // Allocate new storage.
+        node.contents.set(oldContents);
+      },
+  resizeFileStorage(node, newSize) {
+        if (node.usedBytes == newSize) return;
+        var oldContents = node.contents;
+        node.contents = new Uint8Array(newSize); // Allocate new storage.
+        node.contents.set(oldContents.subarray(0, Math.min(newSize, node.usedBytes))); // Copy old data over to the new storage.
+        node.usedBytes = newSize;
+      },
+  node_ops:{
+  getattr(node) {
+          var attr = {};
+          // device numbers reuse inode numbers.
+          attr.dev = FS.isChrdev(node.mode) ? node.id : 1;
+          attr.ino = node.id;
+          attr.mode = node.mode;
+          attr.nlink = 1;
+          attr.uid = 0;
+          attr.gid = 0;
+          attr.rdev = node.rdev;
+          if (FS.isDir(node.mode)) {
+            attr.size = 4096;
+          } else if (FS.isFile(node.mode)) {
+            attr.size = node.usedBytes;
+          } else if (FS.isLink(node.mode)) {
+            attr.size = node.link.length;
+          } else {
+            attr.size = 0;
+          }
+          attr.atime = new Date(node.atime);
+          attr.mtime = new Date(node.mtime);
+          attr.ctime = new Date(node.ctime);
+          // NOTE: In our implementation, st_blocks = Math.ceil(st_size/st_blksize),
+          //       but this is not required by the standard.
+          attr.blksize = 4096;
+          attr.blocks = Math.ceil(attr.size / attr.blksize);
+          return attr;
+        },
+  setattr(node, attr) {
+          for (const key of ['mode', 'atime', 'mtime', 'ctime']) {
+            if (attr[key] != null) {
+              node[key] = attr[key];
+            }
+          }
+          if (attr.size !== undefined) {
+            MEMFS.resizeFileStorage(node, attr.size);
+          }
+        },
+  lookup(parent, name) {
+          throw new FS.ErrnoError(44);
+        },
+  mknod(parent, name, mode, dev = undefined) {
+          return MEMFS.createNode(parent, name, mode, dev);
+        },
+  rename(old_node, new_dir, new_name) {
+          var new_node;
+          try {
+            new_node = FS.lookupNode(new_dir, new_name);
+          } catch (e) {}
+          if (new_node && FS.isDir(old_node.mode)) {
+            // if we're overwriting a directory at new_name, make sure it's empty.
+            for (var i in new_node.contents) {
+              throw new FS.ErrnoError(55);
+            }
+          }
+          // do the internal rewiring
+          delete old_node.parent.contents[old_node.name];
+          new_dir.contents[new_name] = old_node;
+          old_node.name = new_name;
+          new_dir.ctime = new_dir.mtime = old_node.parent.ctime = old_node.parent.mtime = Date.now();
+        },
+  unlink(parent, name) {
+          delete parent.contents[name];
+          parent.ctime = parent.mtime = Date.now();
+        },
+  rmdir(parent, name) {
+          var node = FS.lookupNode(parent, name);
+          for (var i in node.contents) {
+            throw new FS.ErrnoError(55);
+          }
+          delete parent.contents[name];
+          parent.ctime = parent.mtime = Date.now();
+        },
+  readdir(node) {
+          return ['.', '..', ...Object.keys(node.contents)];
+        },
+  symlink(parent, newname, oldpath) {
+          var node = MEMFS.createNode(parent, newname, 0o777 | 40960, 0);
+          node.link = oldpath;
+          return node;
+        },
+  readlink(node) {
+          if (!FS.isLink(node.mode)) {
+            throw new FS.ErrnoError(28);
+          }
+          return node.link;
+        },
+  },
+  stream_ops:{
+  read(stream, buffer, offset, length, position) {
+          var contents = stream.node.contents;
+          if (position >= stream.node.usedBytes) return 0;
+          var size = Math.min(stream.node.usedBytes - position, length);
+          assert(size >= 0);
+          buffer.set(contents.subarray(position, position + size), offset);
+          return size;
+        },
+  write(stream, buffer, offset, length, position, canOwn) {
+          assert(buffer.subarray, 'FS.write expects a TypedArray');
+          // If the buffer is located in main memory (HEAP), and if
+          // memory can grow, we can't hold on to references of the
+          // memory buffer, as they may get invalidated. That means we
+          // need to copy its contents.
+          if (buffer.buffer === HEAP8.buffer) {
+            canOwn = false;
+          }
+  
+          if (!length) return 0;
+          var node = stream.node;
+          node.mtime = node.ctime = Date.now();
+  
+          if (canOwn) {
+            assert(!position, 'canOwn must imply no weird position inside the file');
+            node.contents = buffer.subarray(offset, offset + length);
+            node.usedBytes = length;
+          } else if (!node.usedBytes && !position) { // If this is a simple first write to an empty file, do a fast set since we don't need to care about old data.
+            node.contents = buffer.slice(offset, offset + length);
+            node.usedBytes = length;
+          } else {
+            MEMFS.expandFileStorage(node, position+length);
+            // Use typed array write which is available.
+            node.contents.set(buffer.subarray(offset, offset + length), position);
+            node.usedBytes = Math.max(node.usedBytes, position + length);
+          }
+          return length;
+        },
+  llseek(stream, offset, whence) {
+          var position = offset;
+          if (whence === 1) {
+            position += stream.position;
+          } else if (whence === 2) {
+            if (FS.isFile(stream.node.mode)) {
+              position += stream.node.usedBytes;
+            }
+          }
+          if (position < 0) {
+            throw new FS.ErrnoError(28);
+          }
+          return position;
+        },
+  mmap(stream, length, position, prot, flags) {
+          if (!FS.isFile(stream.node.mode)) {
+            throw new FS.ErrnoError(43);
+          }
+          var ptr;
+          var allocated;
+          var contents = stream.node.contents;
+          // Only make a new copy when MAP_PRIVATE is specified.
+          if (!(flags & 2) && contents.buffer === HEAP8.buffer) {
+            // We can't emulate MAP_SHARED when the file is not backed by the
+            // buffer we're mapping to (e.g. the HEAP buffer).
+            allocated = false;
+            ptr = contents.byteOffset;
+          } else {
+            allocated = true;
+            ptr = mmapAlloc(length);
+            if (!ptr) {
+              throw new FS.ErrnoError(48);
+            }
+            if (contents) {
+              // Try to avoid unnecessary slices.
+              if (position > 0 || position + length < contents.length) {
+                if (contents.subarray) {
+                  contents = contents.subarray(position, position + length);
+                } else {
+                  contents = contents.slice(position, position + length);
+                }
+              }
+              HEAP8.set(contents, ptr);
+            }
+          }
+          return { ptr, allocated };
+        },
+  msync(stream, buffer, offset, length, mmapFlags) {
+          MEMFS.stream_ops.write(stream, buffer, 0, length, offset, false);
+          // should we check if bytesWritten and length are the same?
+          return 0;
+        },
+  },
+  };
+  var FS_stdin_getChar_buffer = [];
+  var FS_stdin_getChar = () => {
+      if (!FS_stdin_getChar_buffer.length) {
+        var result = null;
+        if (ENVIRONMENT_IS_NODE) {
+          // we will read data by chunks of BUFSIZE
+          var BUFSIZE = 256;
+          var buf = Buffer.alloc(BUFSIZE);
+          var bytesRead = 0;
+  
+          try {
+            bytesRead = fs.readSync(process.stdin.fd, buf, 0, BUFSIZE);
+          } catch(e) {
+            // Cross-platform differences: on Windows, reading EOF throws an
+            // exception, but on other OSes, reading EOF returns 0. Uniformize
+            // behavior by treating the EOF exception to return 0.
+            if (e.toString().includes('EOF')) bytesRead = 0;
+            else throw e;
+          }
+  
+          if (bytesRead > 0) {
+            result = buf.toString('utf-8', 0, bytesRead);
+          }
+        } else
+        if (globalThis.window?.prompt) {
+          // Browser.
+          result = window.prompt('Input: ');  // returns null on cancel
+          if (result !== null) {
+            result += '\n';
+          }
+        } else
+        {}
+        if (!result) {
+          return null;
+        }
+        FS_stdin_getChar_buffer = intArrayFromString(result, true);
+      }
+      return FS_stdin_getChar_buffer.shift();
+    };
+  var TTY = {
+  ttys:[],
+  init() {
+        // https://github.com/emscripten-core/emscripten/pull/1555
+        // if (ENVIRONMENT_IS_NODE) {
+        //   // currently, FS.init does not distinguish if process.stdin is a file or TTY
+        //   // device, it always assumes it's a TTY device. because of this, we're forcing
+        //   // process.stdin to UTF8 encoding to at least make stdin reading compatible
+        //   // with text files until FS.init can be refactored.
+        //   process.stdin.setEncoding('utf8');
+        // }
+      },
+  shutdown() {
+        // https://github.com/emscripten-core/emscripten/pull/1555
+        // if (ENVIRONMENT_IS_NODE) {
+        //   // inolen: any idea as to why node -e 'process.stdin.read()' wouldn't exit immediately (with process.stdin being a tty)?
+        //   // isaacs: because now it's reading from the stream, you've expressed interest in it, so that read() kicks off a _read() which creates a ReadReq operation
+        //   // inolen: I thought read() in that case was a synchronous operation that just grabbed some amount of buffered data if it exists?
+        //   // isaacs: it is. but it also triggers a _read() call, which calls readStart() on the handle
+        //   // isaacs: do process.stdin.pause() and i'd think it'd probably close the pending call
+        //   process.stdin.pause();
+        // }
+      },
+  register(dev, ops) {
+        TTY.ttys[dev] = { input: [], output: [], ops: ops };
+        FS.registerDevice(dev, TTY.stream_ops);
+      },
+  stream_ops:{
+  open(stream) {
+          var tty = TTY.ttys[stream.node.rdev];
+          if (!tty) {
+            throw new FS.ErrnoError(43);
+          }
+          stream.tty = tty;
+          stream.seekable = false;
+        },
+  close(stream) {
+          // flush any pending line data
+          stream.tty.ops.fsync(stream.tty);
+        },
+  fsync(stream) {
+          stream.tty.ops.fsync(stream.tty);
+        },
+  read(stream, buffer, offset, length, pos /* ignored */) {
+          if (!stream.tty || !stream.tty.ops.get_char) {
+            throw new FS.ErrnoError(60);
+          }
+          var bytesRead = 0;
+          for (var i = 0; i < length; i++) {
+            var result;
+            try {
+              result = stream.tty.ops.get_char(stream.tty);
+            } catch (e) {
+              throw new FS.ErrnoError(29);
+            }
+            if (result === undefined && !bytesRead) {
+              throw new FS.ErrnoError(6);
+            }
+            if (result === null || result === undefined) break;
+            bytesRead++;
+            buffer[offset+i] = result;
+            // We currently only support canonical mode (ICANON), where
+            // read(2) returns as soon as a line delimiter is read.
+            if (result === 10) break;
+          }
+          if (bytesRead) {
+            stream.node.atime = Date.now();
+          }
+          return bytesRead;
+        },
+  write(stream, buffer, offset, length, pos) {
+          if (!stream.tty || !stream.tty.ops.put_char) {
+            throw new FS.ErrnoError(60);
+          }
+          try {
+            for (var i = 0; i < length; i++) {
+              stream.tty.ops.put_char(stream.tty, buffer[offset+i]);
+            }
+          } catch (e) {
+            throw new FS.ErrnoError(29);
+          }
+          if (length) {
+            stream.node.mtime = stream.node.ctime = Date.now();
+          }
+          return i;
+        },
+  },
+  default_tty_ops:{
+  get_char(tty) {
+          return FS_stdin_getChar();
+        },
+  put_char(tty, val) {
+          if (val === null || val === 10) {
+            out(UTF8ArrayToString(tty.output));
+            tty.output = [];
+          } else {
+            if (val != 0) tty.output.push(val); // val == 0 would cut text output off in the middle.
+          }
+        },
+  fsync(tty) {
+          if (tty.output?.length > 0) {
+            out(UTF8ArrayToString(tty.output));
+            tty.output = [];
+          }
+        },
+  ioctl_tcgets(tty) {
+          // typical setting
+          return {
+            c_iflag: 25856,
+            c_oflag: 5,
+            c_cflag: 191,
+            c_lflag: 35387,
+            c_cc: [
+              0x03, 0x1c, 0x7f, 0x15, 0x04, 0x00, 0x01, 0x00, 0x11, 0x13, 0x1a, 0x00,
+              0x12, 0x0f, 0x17, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]
+          };
+        },
+  ioctl_tcsets(tty, optional_actions, data) {
+          // currently just ignore
+          return 0;
+        },
+  ioctl_tiocgwinsz(tty) {
+          return [24, 80];
+        },
+  },
+  default_tty1_ops:{
+  put_char(tty, val) {
+          if (val === null || val === 10) {
+            err(UTF8ArrayToString(tty.output));
+            tty.output = [];
+          } else {
+            if (val != 0) tty.output.push(val);
+          }
+        },
+  fsync(tty) {
+          if (tty.output?.length > 0) {
+            err(UTF8ArrayToString(tty.output));
+            tty.output = [];
+          }
+        },
+  },
+  };
+  var initRandomFill = () => {
+      // This block is not needed on v19+ since crypto.getRandomValues is builtin
+      if (ENVIRONMENT_IS_NODE) {
+        var nodeCrypto = require('node:crypto');
+        return (view) => (nodeCrypto.randomFillSync(view), 0);
+      }
+  
+      return (view) => (crypto.getRandomValues(view), 0);
+    };
+  var randomFill = (view) => (randomFill = initRandomFill())(view);
+  var strError = (errno) => UTF8ToString(_strerror(errno));
   var FS = {
   root:null,
   mounts:[],
@@ -3612,11 +4651,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   },
   streams:[],
   nextInode:1,
-  nameTable:null,
+  nameTable:[],
   currentPath:"/",
   initialized:false,
   ignorePermissions:true,
-  filesystems:null,
   syncFSRequests:0,
   readFiles:{
   },
@@ -3705,6 +4743,48 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         get isDevice() {
           return FS.isChrdev(this.mode);
         }
+        // The per-inode readiness wait-queue. The node carries a Set of listener
+        // entries {cb}; producers (SOCKFS, PIPEFS) call notifyListeners on a
+        // readiness transition, and poll()/epoll consume it. It lives on the node
+        // (not the fd) so dup'd fds share one queue. Only nodes that derive real
+        // readiness (sockets, pipes, and an epoll's own node) ever use this -
+        // always-ready types (regular files, ttys) never register or notify.
+        addListener(cb, exclusive = false) {
+          var entry = {cb, exclusive};
+          var listeners = (this.listeners ??= new Set());
+          listeners.add(entry);
+          return {listeners, entry};
+        }
+        notifyListeners(flags) {
+          // Iterates the set without copying, which is safe ONLY under a
+          // load-bearing contract that every internal listener must honour:
+          //   1. A listener must not run user code synchronously (a poll waiter only
+          //      resolves a Promise; an epoll registration only re-lists +
+          //      re-notifies; the epoll callback only schedules a tick). User code
+          //      runs on a later tick, never inside this loop.
+          //   2. A listener may delete entries only from ITS OWN waiter, never from
+          //      a sibling node's set that may be mid-iteration. (Deleting an entry
+          //      of the set being iterated here is fine - a Set tolerates removal of
+          //      a not-yet-visited entry mid-iteration; mutating a *different* node's
+          //      set is fine because that set is not being iterated.)
+          // Violating either gives silently skipped wakeups that are near-impossible
+          // to reproduce. Any new producer/listener must preserve it.
+          if (!this.listeners) return;
+          // Fire every non-exclusive listener. Among EPOLLEXCLUSIVE registrations
+          // (one fd watched by several epolls) wake only one, rotating round-robin
+          // per node, to avoid a thundering herd. (Only epoll registrations are ever
+          // exclusive; poll waiters and a node's own consumers are not.)
+          var excl;
+          for (var entry of this.listeners) {
+            if (entry.exclusive) (excl ||= []).push(entry);
+            else entry.cb(flags);
+          }
+          if (excl) {
+            var i = (this.exclTurn || 0) % excl.length;
+            this.exclTurn = i + 1;
+            excl[i].cb(flags);
+          }
+        }
       },
   lookupPath(path, opts = {}) {
         if (!path) {
@@ -3716,7 +4796,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           path = FS.cwd() + '/' + path;
         }
   
-        // limit max consecutive symlinks to 40 (SYMLOOP_MAX).
+        // limit max consecutive symlinks to SYMLOOP_MAX.
         linkloop: for (var nlinks = 0; nlinks < 40; nlinks++) {
           // split the absolute path
           var parts = path.split('/').filter((p) => !!p);
@@ -3841,8 +4921,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         // if we failed to find it in the cache, call into the VFS
         return FS.lookup(parent, name);
       },
-  createNode(parent, name, mode, rdev) {
-        assert(typeof parent == 'object')
+  createNode(parent, name, mode, rdev = undefined) {
+        assert(typeof parent === 'object')
         var node = new FS.FSNode(parent, name, mode, rdev);
   
         FS.hashAddNode(node);
@@ -3893,9 +4973,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         // return 0 if any user, group or owner bits are set.
         if (perms.includes('r') && !(node.mode & 292)) {
           return 2;
-        } else if (perms.includes('w') && !(node.mode & 146)) {
+        }
+        if (perms.includes('w') && !(node.mode & 146)) {
           return 2;
-        } else if (perms.includes('x') && !(node.mode & 73)) {
+        }
+        if (perms.includes('x') && !(node.mode & 73)) {
           return 2;
         }
         return 0;
@@ -3936,10 +5018,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           if (FS.isRoot(node) || FS.getPath(node) === FS.cwd()) {
             return 10;
           }
-        } else {
-          if (FS.isDir(node.mode)) {
-            return 31;
-          }
+        } else if (FS.isDir(node.mode)) {
+          return 31;
         }
         return 0;
       },
@@ -3949,13 +5029,16 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         if (FS.isLink(node.mode)) {
           return 32;
-        } else if (FS.isDir(node.mode)) {
-          if (FS.flagsToPermissionString(flags) !== 'r' // opening for write
-              || (flags & (512 | 64))) { // TODO: check for O_SEARCH? (== search for dir only)
+        }
+        var mode = FS.flagsToPermissionString(flags);
+        if (FS.isDir(node.mode)) {
+          // opening for write
+          // TODO: check for O_SEARCH? (== search for dir only)
+          if (mode !== 'r' || (flags & (512 | 64))) {
             return 31;
           }
         }
-        return FS.nodePermissions(node, FS.flagsToPermissionString(flags));
+        return FS.nodePermissions(node, mode);
       },
   checkOpExists(op, err) {
         if (!op) {
@@ -3963,9 +5046,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         return op;
       },
-  MAX_OPEN_FDS:4096,
   nextfd() {
-        for (var fd = 0; fd <= FS.MAX_OPEN_FDS; fd++) {
+        for (var fd = 0; fd <= FS_MAX_OPEN_FDS; fd++) {
           if (!FS.streams[fd]) {
             return fd;
           }
@@ -4005,7 +5087,14 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         var arg = setattr ? stream : node;
         setattr ??= node.node_ops.setattr;
         FS.checkOpExists(setattr, 63)
-        setattr(arg, attr);
+        try {
+          setattr(arg, attr);
+        } catch (e) {
+          if (e instanceof RangeError) {
+            throw new FS.ErrnoError(22);
+          }
+          throw e;
+        }
       },
   chrdev_stream_ops:{
   open(stream) {
@@ -4041,7 +5130,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         return mounts;
       },
   syncfs(populate, callback) {
-        if (typeof populate == 'function') {
+        if (typeof populate === 'function') {
           callback = populate;
           populate = false;
         }
@@ -4084,7 +5173,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
       },
   mount(type, opts, mountpoint) {
-        if (typeof type == 'string') {
+        if (typeof type === 'string') {
           // The filesystem was not included, and instead we have an error
           // message stored in the variable.
           throw type;
@@ -4206,9 +5295,9 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         var rtn = {
           bsize: 4096,
           frsize: 4096,
-          blocks: 1e6,
-          bfree: 5e5,
-          bavail: 5e5,
+          blocks: 1_000_000,
+          bfree: 500_000,
+          bavail: 500_000,
           files: FS.nextInode,
           ffree: FS.nextInode - 1,
           fsid: 42,
@@ -4231,7 +5320,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         mode |= 16384;
         return FS.mknod(path, mode, 0);
       },
-  mkdirTree(path, mode) {
+  mkdirTree(path, mode = 0o777) {
         var dirs = path.split('/');
         var d = '';
         for (var dir of dirs) {
@@ -4245,8 +5334,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           }
         }
       },
-  mkdev(path, mode, dev) {
-        if (typeof dev == 'undefined') {
+  mkdev(path, mode, dev = undefined) {
+        if (typeof dev === 'undefined') {
           dev = mode;
           mode = 0o666;
         }
@@ -4271,6 +5360,25 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           throw new FS.ErrnoError(63);
         }
         return parent.node_ops.symlink(parent, newname, oldpath);
+      },
+  link(oldpath, newpath, flags) {
+        var lookup = FS.lookupPath(newpath, { parent: true });
+        var parent = lookup.node;
+        if (!parent) {
+          throw new FS.ErrnoError(44);
+        }
+        var newname = PATH.basename(newpath);
+        var errCode = FS.mayCreate(parent, newname);
+        if (errCode) {
+          throw new FS.ErrnoError(errCode);
+        }
+        // Hardlinks are only supported by filesystem backends that provide a
+        // `link` node op (e.g. NODERAWFS backed by the host). NODEFS omits it:
+        // a host hardlink cannot be confined to the mount root.
+        if (!parent.node_ops.link) {
+          throw new FS.ErrnoError(34);
+        }
+        return parent.node_ops.link(parent, newname, oldpath, flags);
       },
   rename(old_path, new_path) {
         var old_dirname = PATH.dirname(old_path);
@@ -4346,6 +5454,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         // do the underlying fs rename
         try {
           old_dir.node_ops.rename(old_node, new_dir, new_name);
+          // The replaced node is stale now. Evict it only after the rename
+          // succeeded: backends like NODEFS report node.id as st_ino.
+          if (new_node) {
+            FS.hashRemoveNode(new_node);
+          }
           // update old node (we do this here to avoid each backend
           // needing to)
           old_node.parent = new_dir;
@@ -4416,7 +5529,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         return link.node_ops.readlink(link);
       },
-  stat(path, dontFollow) {
+  stat(path, dontFollow = false) {
         var lookup = FS.lookupPath(path, { follow: !dontFollow });
         var node = lookup.node;
         var getattr = FS.checkOpExists(node.node_ops.getattr, 63);
@@ -4434,16 +5547,16 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   lstat(path) {
         return FS.stat(path, true);
       },
-  doChmod(stream, node, mode, dontFollow) {
+  doChmod(stream, node, mode, dontFollow = false) {
         FS.doSetAttr(stream, node, {
           mode: (mode & 4095) | (node.mode & ~4095),
           ctime: Date.now(),
           dontFollow
         });
       },
-  chmod(path, mode, dontFollow) {
+  chmod(path, mode, dontFollow = false) {
         var node;
-        if (typeof path == 'string') {
+        if (typeof path === 'string') {
           var lookup = FS.lookupPath(path, { follow: !dontFollow });
           node = lookup.node;
         } else {
@@ -4458,16 +5571,16 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         var stream = FS.getStreamChecked(fd);
         FS.doChmod(stream, stream.node, mode, false);
       },
-  doChown(stream, node, dontFollow) {
+  doChown(stream, node, dontFollow = false) {
         FS.doSetAttr(stream, node, {
           timestamp: Date.now(),
           dontFollow
           // we ignore the uid / gid for now
         });
       },
-  chown(path, uid, gid, dontFollow) {
+  chown(path, uid, gid, dontFollow = false) {
         var node;
-        if (typeof path == 'string') {
+        if (typeof path === 'string') {
           var lookup = FS.lookupPath(path, { follow: !dontFollow });
           node = lookup.node;
         } else {
@@ -4503,7 +5616,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           throw new FS.ErrnoError(28);
         }
         var node;
-        if (typeof path == 'string') {
+        if (typeof path === 'string') {
           var lookup = FS.lookupPath(path, { follow: true });
           node = lookup.node;
         } else {
@@ -4518,20 +5631,19 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         FS.doTruncate(stream, stream.node, len);
       },
-  utime(path, atime, mtime) {
-        var lookup = FS.lookupPath(path, { follow: true });
-        var node = lookup.node;
-        var setattr = FS.checkOpExists(node.node_ops.setattr, 63);
-        setattr(node, {
+  utime(path, atime, mtime, dontFollow = false) {
+        var lookup = FS.lookupPath(path, { follow: !dontFollow });
+        FS.doSetAttr(null, lookup.node, {
           atime: atime,
-          mtime: mtime
+          mtime: mtime,
+          dontFollow
         });
       },
   open(path, flags, mode = 0o666) {
-        if (path === "") {
+        if (path === '') {
           throw new FS.ErrnoError(44);
         }
-        flags = typeof flags == 'string' ? FS_modeStringToFlags(flags) : flags;
+        flags = FS_modeStringToFlags(flags);
         if ((flags & 64)) {
           mode = (mode & 4095) | 32768;
         } else {
@@ -4539,10 +5651,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         var node;
         var isDirPath;
-        if (typeof path == 'object') {
+        if (typeof path === 'object') {
           node = path;
         } else {
-          isDirPath = path.endsWith("/");
+          isDirPath = path.endsWith('/');
           // noent_okay makes it so that if the final component of the path
           // doesn't exist, lookupPath returns `node: undefined`. `path` will be
           // updated to point to the target of all symlinks.
@@ -4621,6 +5733,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         if (Module['logReadFiles'] && !(flags & 1)) {
           if (!(path in FS.readFiles)) {
             FS.readFiles[path] = 1;
+            err(`read file: ${path}`);
           }
         }
         return stream;
@@ -4630,6 +5743,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           throw new FS.ErrnoError(8);
         }
         if (stream.getdents) stream.getdents = null; // free readdir state
+        // The fd is going away: wake anything waiting on it (poll/epoll) with
+        // POLLNVAL so a blocking wait unblocks and an epoll registration is evicted
+        // on its next derive. Only sockets/pipes/epoll ever carry a wait-queue, so
+        // for every other stream (incl. nodeless noderawfs stdio) this is a no-op.
+        stream.node?.notifyListeners(32);
         try {
           if (stream.stream_ops.close) {
             stream.stream_ops.close(stream);
@@ -4658,7 +5776,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         stream.ungotten = [];
         return stream.position;
       },
-  read(stream, buffer, offset, length, position) {
+  read(stream, buffer, offset, length, position = undefined) {
         assert(offset >= 0);
         if (length < 0 || position < 0) {
           throw new FS.ErrnoError(28);
@@ -4675,7 +5793,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         if (!stream.stream_ops.read) {
           throw new FS.ErrnoError(28);
         }
-        var seeking = typeof position != 'undefined';
+        var seeking = typeof position !== 'undefined';
         if (!seeking) {
           position = stream.position;
         } else if (!stream.seekable) {
@@ -4685,8 +5803,9 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         if (!seeking) stream.position += bytesRead;
         return bytesRead;
       },
-  write(stream, buffer, offset, length, position, canOwn) {
+  write(stream, buffer, offset, length, position = undefined, canOwn = undefined) {
         assert(offset >= 0);
+        assert(buffer.subarray, 'FS.write expects a TypedArray');
         if (length < 0 || position < 0) {
           throw new FS.ErrnoError(28);
         }
@@ -4706,7 +5825,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           // seek to the end before writing in append mode
           FS.llseek(stream, 0, 2);
         }
-        var seeking = typeof position != 'undefined';
+        var seeking = typeof position !== 'undefined';
         if (!seeking) {
           position = stream.position;
         } else if (!stream.seekable) {
@@ -4723,8 +5842,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         // to write to file opened in read-only mode with MAP_PRIVATE flag,
         // as all modifications will be visible only in the memory of
         // the current process.
-        if ((prot & 2) !== 0
-            && (flags & 2) === 0
+        if ((prot & 2)
+            && !(flags & 2)
             && (stream.flags & 2097155) !== 2) {
           throw new FS.ErrnoError(2);
         }
@@ -4753,8 +5872,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         return stream.stream_ops.ioctl(stream, cmd, arg);
       },
   readFile(path, opts = {}) {
-        opts.flags = opts.flags || 0;
-        opts.encoding = opts.encoding || 'binary';
+        opts.flags ??= 0;
+        opts.encoding ??= 'binary';
         if (opts.encoding !== 'utf8' && opts.encoding !== 'binary') {
           abort(`Invalid encoding type "${opts.encoding}"`);
         }
@@ -4770,16 +5889,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         return buf;
       },
   writeFile(path, data, opts = {}) {
-        opts.flags = opts.flags || 577;
+        opts.flags ??= 577;
         var stream = FS.open(path, opts.flags, opts.mode);
-        if (typeof data == 'string') {
-          data = new Uint8Array(intArrayFromString(data, true));
-        }
-        if (ArrayBuffer.isView(data)) {
-          FS.write(stream, data, 0, data.byteLength, undefined, opts.canOwn);
-        } else {
-          abort('Unsupported data type');
-        }
+        data = FS_fileDataToTypedArray(data);
+        FS.write(stream, data, 0, data.byteLength, undefined, opts.canOwn);
         FS.close(stream);
       },
   cwd:() => FS.currentPath,
@@ -4823,7 +5936,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         // use a buffer to avoid overhead of individual crypto calls per byte
         var randomBuffer = new Uint8Array(1024), randomLeft = 0;
         var randomByte = () => {
-          if (randomLeft === 0) {
+          if (!randomLeft) {
             randomFill(randomBuffer);
             randomLeft = randomBuffer.byteLength;
           }
@@ -4905,19 +6018,15 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         assert(stderr.fd === 2, `invalid handle for stderr (${stderr.fd})`);
       },
   staticInit() {
-        FS.nameTable = new Array(4096);
+        FS.nameTable.length = 4096;
   
         FS.mount(MEMFS, {}, '/');
   
         FS.createDefaultDirectories();
         FS.createDefaultDevices();
         FS.createSpecialDirectories();
-  
-        FS.filesystems = {
-          'MEMFS': MEMFS,
-        };
       },
-  init(input, output, error) {
+  init(input = undefined, output = undefined, error = undefined) {
         assert(!FS.initialized, 'FS.init was previously called. If you want to initialize later with custom parameters, remove any earlier calls (note that one is automatically added to the generated code)');
         FS.initialized = true;
   
@@ -4939,14 +6048,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           }
         }
       },
-  findObject(path, dontResolveLastLink) {
-        var ret = FS.analyzePath(path, dontResolveLastLink);
-        if (!ret.exists) {
-          return null;
-        }
-        return ret.object;
-      },
-  analyzePath(path, dontResolveLastLink) {
+  analyzePath(path, dontResolveLastLink = false) {
+        warnOnce('FS.analyzePath is deprecated; use FS.lookupPath or FS.stat instead');
         // operate from within the context of the symlink's target
         try {
           var lookup = FS.lookupPath(path, { follow: !dontResolveLastLink });
@@ -4974,8 +6077,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         };
         return ret;
       },
-  createPath(parent, path, canRead, canWrite) {
-        parent = typeof parent == 'string' ? parent : FS.getPath(parent);
+  createPath(parent, path, canRead = undefined, canWrite = undefined) {
+        parent = typeof parent === 'string' ? parent : FS.getPath(parent);
         var parts = path.split('/').reverse();
         while (parts.length) {
           var part = parts.pop();
@@ -4990,25 +6093,21 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         }
         return current;
       },
-  createFile(parent, name, properties, canRead, canWrite) {
-        var path = PATH.join2(typeof parent == 'string' ? parent : FS.getPath(parent), name);
+  createFile(parent, name, properties, canRead = undefined, canWrite = undefined) {
+        var path = PATH.join2(typeof parent === 'string' ? parent : FS.getPath(parent), name);
         var mode = FS_getMode(canRead, canWrite);
         return FS.create(path, mode);
       },
-  createDataFile(parent, name, data, canRead, canWrite, canOwn) {
+  createDataFile(parent, name, data = undefined, canRead = undefined, canWrite = undefined, canOwn = undefined) {
         var path = name;
         if (parent) {
-          parent = typeof parent == 'string' ? parent : FS.getPath(parent);
+          parent = typeof parent === 'string' ? parent : FS.getPath(parent);
           path = name ? PATH.join2(parent, name) : parent;
         }
         var mode = FS_getMode(canRead, canWrite);
         var node = FS.create(path, mode);
         if (data) {
-          if (typeof data == 'string') {
-            var arr = new Array(data.length);
-            for (var i = 0, len = data.length; i < len; ++i) arr[i] = data.charCodeAt(i);
-            data = arr;
-          }
+          data = FS_fileDataToTypedArray(data);
           // make sure we can write to the file
           FS.chmod(node, mode | 146);
           var stream = FS.open(node, 577);
@@ -5017,8 +6116,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           FS.chmod(node, mode);
         }
       },
-  createDevice(parent, name, input, output) {
-        var path = PATH.join2(typeof parent == 'string' ? parent : FS.getPath(parent), name);
+  createDevice(parent, name, input = undefined, output = undefined) {
+        var path = PATH.join2(typeof parent === 'string' ? parent : FS.getPath(parent), name);
         var mode = FS_getMode(!!input, !!output);
         FS.createDevice.major ??= 64;
         var dev = FS.makedev(FS.createDevice.major++, 0);
@@ -5043,7 +6142,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
               } catch (e) {
                 throw new FS.ErrnoError(29);
               }
-              if (result === undefined && bytesRead === 0) {
+              if (result === undefined && !bytesRead) {
                 throw new FS.ErrnoError(6);
               }
               if (result === null || result === undefined) break;
@@ -5074,7 +6173,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   forceLoadFile(obj) {
         if (obj.isDevice || obj.isFolder || obj.link || obj.contents) return true;
         if (globalThis.XMLHttpRequest) {
-          abort("Lazy loading should have been performed (contents set) in createLazyFile, but it was not. Lazy loading only works in web workers. Use --embed-file or --preload-file in emcc on the main thread.");
+          abort('Lazy loading should have been performed (contents set) in createLazyFile, but it was not. Lazy loading only works in web workers. Use --embed-file or --preload-file in emcc on the main thread.');
         } else { // Command-line.
           try {
             obj.contents = readBinary(obj.url);
@@ -5083,7 +6182,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           }
         }
       },
-  createLazyFile(parent, name, url, canRead, canWrite) {
+  createLazyFile(parent, name, url, canRead = undefined, canWrite = undefined) {
         // Lazy chunked Uint8Array (implements get and length from Uint8Array).
         // Actual getting is abstracted away for eventual reuse.
         class LazyUint8Array {
@@ -5105,11 +6204,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
             var xhr = new XMLHttpRequest();
             xhr.open('HEAD', url, false);
             xhr.send(null);
-            if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort("Couldn't load " + url + ". Status: " + xhr.status);
-            var datalength = Number(xhr.getResponseHeader("Content-length"));
+            if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort(`Couldn't load ${url}. Status: ${xhr.status}`);
+            var datalength = Number(xhr.getResponseHeader('Content-length'));
             var header;
-            var hasByteServing = (header = xhr.getResponseHeader("Accept-Ranges")) && header === "bytes";
-            var usesGzip = (header = xhr.getResponseHeader("Content-Encoding")) && header === "gzip";
+            var hasByteServing = (header = xhr.getResponseHeader('Accept-Ranges')) && header === 'bytes';
+            var usesGzip = (header = xhr.getResponseHeader('Content-Encoding')) && header === 'gzip';
   
             var chunkSize = 1024*1024; // Chunk size in bytes
   
@@ -5117,13 +6216,13 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   
             // Function to get a range from the remote URL.
             var doXHR = (from, to) => {
-              if (from > to) abort("invalid range (" + from + ", " + to + ") or no bytes requested!");
-              if (to > datalength-1) abort("only " + datalength + " bytes available! programmer error!");
+              if (from > to) abort(`invalid range (${from}, ${to}) or no bytes requested!`);
+              if (to > datalength-1) abort(`only ${datalength} bytes available! programmer error!`);
   
               // TODO: Use mozResponseArrayBuffer, responseStream, etc. if available.
               var xhr = new XMLHttpRequest();
               xhr.open('GET', url, false);
-              if (datalength !== chunkSize) xhr.setRequestHeader("Range", "bytes=" + from + "-" + to);
+              if (datalength !== chunkSize) xhr.setRequestHeader('Range', `bytes=${from}-${to}`);
   
               // Some hints to the browser that we want binary data.
               xhr.responseType = 'arraybuffer';
@@ -5132,21 +6231,21 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
               }
   
               xhr.send(null);
-              if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort("Couldn't load " + url + ". Status: " + xhr.status);
+              if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort(`Couldn't load ${url}. Status: ${xhr.status}`);
               if (xhr.response !== undefined) {
                 return new Uint8Array(/** @type{Array<number>} */(xhr.response || []));
               }
-              return intArrayFromString(xhr.responseText || '', true);
+              return intArrayFromString(xhr.responseText ?? '', true);
             };
             var lazyArray = this;
             lazyArray.setDataGetter((chunkNum) => {
               var start = chunkNum * chunkSize;
               var end = (chunkNum+1) * chunkSize - 1; // including this byte
               end = Math.min(end, datalength-1); // if datalength-1 is selected, this is the last block
-              if (typeof lazyArray.chunks[chunkNum] == 'undefined') {
+              if (typeof lazyArray.chunks[chunkNum] === 'undefined') {
                 lazyArray.chunks[chunkNum] = doXHR(start, end);
               }
-              if (typeof lazyArray.chunks[chunkNum] == 'undefined') abort('doXHR failed!');
+              if (typeof lazyArray.chunks[chunkNum] === 'undefined') abort('doXHR failed!');
               return lazyArray.chunks[chunkNum];
             });
   
@@ -5155,7 +6254,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
               chunkSize = datalength = 1; // this will force getter(0)/doXHR do download the whole file
               datalength = this.getter(0).length;
               chunkSize = datalength;
-              out("LazyFiles on gzip forces download of the whole file when length is accessed");
+              out('LazyFiles on gzip forces download of the whole file when length is accessed');
             }
   
             this._length = datalength;
@@ -5243,28 +6342,12 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         node.stream_ops = stream_ops;
         return node;
       },
-  absolutePath() {
-        abort('FS.absolutePath has been removed; use PATH_FS.resolve instead');
-      },
-  createFolder() {
-        abort('FS.createFolder has been removed; use FS.mkdir instead');
-      },
-  createLink() {
-        abort('FS.createLink has been removed; use FS.symlink instead');
-      },
-  joinPath() {
-        abort('FS.joinPath has been removed; use PATH.join instead');
-      },
-  mmapAlloc() {
-        abort('FS.mmapAlloc has been replaced by the top level function mmapAlloc');
-      },
-  standardizePath() {
-        abort('FS.standardizePath has been removed; use PATH.normalize instead');
-      },
   };
-  
+  /** not-@type {!BigInt64Array} */
+  var HEAP64;
   var SYSCALLS = {
-  calculateAt(dirfd, path, allowEmpty) {
+  currentUmask:18,
+  calculateAt(dirfd, path, allowEmpty = false) {
         if (PATH.isAbs(path)) {
           return path;
         }
@@ -5326,7 +6409,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           // MAP_PRIVATE calls need not to be synced back to underlying fs
           return 0;
         }
-        var buffer = HEAPU8.slice(addr, addr + len);
+        var buffer = HEAPU8.subarray(addr, addr + len);
         FS.msync(stream, buffer, offset, len, flags);
       },
   getStreamFromFD(fd) {
@@ -5346,11 +6429,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       FS.chmod(path, mode);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_faccessat(dirfd, path, amode, flags) {
   try {
   
@@ -5375,33 +6458,35 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_fchmod(fd, mode) {
   try {
   
       FS.fchmod(fd, mode);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_fchown32(fd, owner, group) {
   try {
   
       FS.fchown(fd, owner, group);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
+  /** @type {!Int16Array} */
+  var HEAP16;
   var syscallGetVarargI = () => {
       assert(SYSCALLS.varargs != undefined);
       // the `+` prepended here is necessary to convince the JSCompiler that varargs is indeed a number.
@@ -5409,9 +6494,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       SYSCALLS.varargs += 4;
       return ret;
     };
-  var syscallGetVarargP = syscallGetVarargI;
-  
-  
   function ___syscall_fcntl64(fd, cmd, varargs) {
   SYSCALLS.varargs = varargs;
   try {
@@ -5437,7 +6519,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
           return stream.flags;
         case 4: {
           var arg = syscallGetVarargI();
-          stream.flags |= arg;
+          var mask = 289792;
+          stream.flags = (stream.flags & ~mask) | (arg & mask);
           return 0;
         }
         case 12: {
@@ -5457,24 +6540,23 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       return -28;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_fstat64(fd, buf) {
   try {
   
       return SYSCALLS.writeStat(buf, FS.fstat(fd));
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
-  var INT53_MAX = 9007199254740992;
   
-  var INT53_MIN = -9007199254740992;
+  const INT53_MAX = 9007199254740992;
+  const INT53_MIN = -9007199254740992;
   var bigintToI53Checked = (num) => (num < INT53_MIN || num > INT53_MAX) ? NaN : Number(num);
   function ___syscall_ftruncate64(fd, length) {
     length = bigintToI53Checked(length);
@@ -5482,60 +6564,60 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   
   try {
   
-      if (isNaN(length)) return -61;
+      if (isNaN(length)) return -22;
       FS.ftruncate(fd, length);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   ;
   }
-
-  
   var stringToUTF8 = (str, outPtr, maxBytesToWrite) => {
-      assert(typeof maxBytesToWrite == 'number', 'stringToUTF8(str, outPtr, maxBytesToWrite) is missing the third parameter that specifies the length of the output buffer!');
+      assert(typeof maxBytesToWrite === 'number', 'stringToUTF8 requires a third parameter that specifies the length of the output buffer');
       return stringToUTF8Array(str, HEAPU8, outPtr, maxBytesToWrite);
     };
   function ___syscall_getcwd(buf, size) {
   try {
   
-      if (size === 0) return -28;
+      if (!size) return -28;
       var cwd = FS.cwd();
       var cwdLengthInBytes = lengthBytesUTF8(cwd) + 1;
       if (size < cwdLengthInBytes) return -68;
       stringToUTF8(cwd, buf, size);
       return cwdLengthInBytes;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
+  var ___syscall_geteuid32 = () => 0;
   function ___syscall_lstat64(path, buf) {
   try {
   
       path = SYSCALLS.getStr(path);
       return SYSCALLS.writeStat(buf, FS.lstat(path));
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_mkdirat(dirfd, path, mode) {
   try {
   
       path = SYSCALLS.getStr(path);
       path = SYSCALLS.calculateAt(dirfd, path);
-      FS.mkdir(path, mode, 0);
+      mode &= ~SYSCALLS.currentUmask;
+      FS.mkdir(path, mode);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_newfstatat(dirfd, path, buf, flags) {
   try {
   
@@ -5547,11 +6629,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       path = SYSCALLS.calculateAt(dirfd, path, allowEmpty);
       return SYSCALLS.writeStat(buf, nofollow ? FS.lstat(path) : FS.stat(path));
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
   
   function ___syscall_openat(dirfd, path, flags, varargs) {
   SYSCALLS.varargs = varargs;
@@ -5560,14 +6641,15 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       path = SYSCALLS.getStr(path);
       path = SYSCALLS.calculateAt(dirfd, path);
       var mode = varargs ? syscallGetVarargI() : 0;
+      if (flags & 64) {
+        mode &= ~SYSCALLS.currentUmask;
+      }
       return FS.open(path, flags, mode).fd;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
-  
   
   function ___syscall_readlinkat(dirfd, path, buf, bufsize) {
   try {
@@ -5585,11 +6667,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAP8[buf+len] = endChar;
       return len;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_rmdir(path) {
   try {
   
@@ -5597,22 +6679,22 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       FS.rmdir(path);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_stat64(path, buf) {
   try {
   
       path = SYSCALLS.getStr(path);
       return SYSCALLS.writeStat(buf, FS.stat(path));
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   function ___syscall_unlinkat(dirfd, path, flags) {
   try {
   
@@ -5627,66 +6709,56 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   var readI53FromI64 = (ptr) => {
       return HEAPU32[((ptr)>>2)] + HEAP32[(((ptr)+(4))>>2)] * 4294967296;
     };
-  
   function ___syscall_utimensat(dirfd, path, times, flags) {
   try {
   
+      var nofollow = flags & 256;
       path = SYSCALLS.getStr(path);
-      assert(!flags);
       path = SYSCALLS.calculateAt(dirfd, path, true);
       var now = Date.now(), atime, mtime;
       if (!times) {
         atime = now;
         mtime = now;
       } else {
-        var seconds = readI53FromI64(times);
-        var nanoseconds = HEAP32[(((times)+(8))>>2)];
-        if (nanoseconds == 1073741823) {
-          atime = now;
-        } else if (nanoseconds == 1073741822) {
-          atime = null;
-        } else {
-          atime = (seconds*1000) + (nanoseconds/(1000*1000));
+        function readTimespec(ptr) {
+          var tv_nsec = HEAP32[(((ptr)+(8))>>2)];
+          if (tv_nsec == 1073741823) {
+            return now;
+          }
+          if (tv_nsec == 1073741822) {
+            return null;
+          }
+          var tv_sec = readI53FromI64(ptr);
+          return (tv_sec*1000) + Math.floor(tv_nsec/(1000*1000));
         }
-        times += 16;
-        seconds = readI53FromI64(times);
-        nanoseconds = HEAP32[(((times)+(8))>>2)];
-        if (nanoseconds == 1073741823) {
-          mtime = now;
-        } else if (nanoseconds == 1073741822) {
-          mtime = null;
-        } else {
-          mtime = (seconds*1000) + (nanoseconds/(1000*1000));
-        }
+        atime = readTimespec(times);
+        mtime = readTimespec(times + 16);
       }
       // null here means UTIME_OMIT was passed. If both were set to UTIME_OMIT then
       // we can skip the call completely.
       if ((mtime ?? atime) !== null) {
-        FS.utime(path, atime, mtime);
+        FS.utime(path, atime, mtime, nofollow);
       }
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   }
-
+  
   var __abort_js = () =>
       abort('native code called abort()');
-
-  var isLeapYear = (year) => year%4 === 0 && (year%100 !== 0 || year%400 === 0);
-  
   var MONTH_DAYS_LEAP_CUMULATIVE = [0,31,60,91,121,152,182,213,244,274,305,335];
-  
   var MONTH_DAYS_REGULAR_CUMULATIVE = [0,31,59,90,120,151,181,212,243,273,304,334];
+  var isLeapYear = (year) => year%4 === 0 && (year%100 !== 0 || year%400 === 0);
   var ydayFromDate = (date) => {
       var leap = isLeapYear(date.getFullYear());
       var monthDaysCumulative = (leap ? MONTH_DAYS_LEAP_CUMULATIVE : MONTH_DAYS_REGULAR_CUMULATIVE);
@@ -5694,12 +6766,14 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   
       return yday;
     };
-  
   function __localtime_js(time, tmPtr) {
     time = bigintToI53Checked(time);
   
   
       var date = new Date(time*1000);
+      if (isNaN(date.getTime())) {
+        return 1;
+      }
       HEAP32[((tmPtr)>>2)] = date.getSeconds();checkInt32(date.getSeconds());
       HEAP32[(((tmPtr)+(4))>>2)] = date.getMinutes();checkInt32(date.getMinutes());
       HEAP32[(((tmPtr)+(8))>>2)] = date.getHours();checkInt32(date.getHours());
@@ -5718,14 +6792,9 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       var winterOffset = start.getTimezoneOffset();
       var dst = (summerOffset != winterOffset && date.getTimezoneOffset() == Math.min(winterOffset, summerOffset))|0;
       HEAP32[(((tmPtr)+(32))>>2)] = dst;checkInt32(dst);
+      return 0;
     ;
   }
-
-  
-  
-  
-  
-  
   function __mmap_js(len, prot, flags, fd, offset, allocated, addr) {
     offset = bigintToI53Checked(offset);
   
@@ -5742,13 +6811,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAPU32[((addr)>>2)] = ptr;
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   ;
   }
-
-  
   function __munmap_js(addr, len, prot, flags, fd, offset) {
     offset = bigintToI53Checked(offset);
   
@@ -5760,13 +6827,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         SYSCALLS.doMsync(addr, stream, len, flags, offset);
       }
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
   }
   ;
   }
-
-  
   var __tzset_js = (timezone, daylight, std_name, dst_name) => {
       // TODO: Use (malleable) environment variables instead of system settings.
       var currentYear = new Date().getFullYear();
@@ -5795,11 +6860,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       var extractZone = (timezoneOffset) => {
         // Why inverse sign?
         // Read here https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/getTimezoneOffset
-        var sign = timezoneOffset >= 0 ? "-" : "+";
+        var sign = timezoneOffset >= 0 ? '-' : '+';
   
         var absOffset = Math.abs(timezoneOffset)
-        var hours = String(Math.floor(absOffset / 60)).padStart(2, "0");
-        var minutes = String(absOffset % 60).padStart(2, "0");
+        var hours = String(Math.floor(absOffset / 60)).padStart(2, '0');
+        var minutes = String(absOffset % 60).padStart(2, '0');
   
         return `UTC${sign}${hours}${minutes}`;
       }
@@ -5819,15 +6884,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         stringToUTF8(summerName, std_name, 17);
       }
     };
-
-  var _emscripten_get_now = () => performance.now();
-  
-  var _emscripten_date_now = () => Date.now();
-  
-  var nowIsMonotonic = 1;
-  
   var checkWasiClock = (clock_id) => clock_id >= 0 && clock_id <= 3;
-  
+  const nowIsMonotonic = 1;
+  var _emscripten_date_now = () => Date.now();
+  var _emscripten_get_now = () => performance.now();
   function _clock_time_get(clk_id, ignored_precision, ptime) {
     ignored_precision = bigintToI53Checked(ignored_precision);
   
@@ -5845,12 +6905,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         return 52;
       }
       // "now" is in ms, and wasi times are in ns.
-      var nsec = Math.round(now * 1000 * 1000);
+      var nsec = Math.round(now * 1_000_000);
       HEAP64[((ptime)>>3)] = BigInt(nsec);checkInt64(nsec);
       return 0;
     ;
   }
-
 
   var getHeapMax = () =>
       // Stay one Wasm page short of 4GB: while e.g. Chrome is able to allocate
@@ -5860,10 +6919,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       2147483648;
   var _emscripten_get_heap_max = () => getHeapMax();
 
-
-  
-  
-  
   var growMemory = (size) => {
       var oldHeapSize = wasmMemory.buffer.byteLength;
       var pages = ((size - oldHeapSize + 65535) / 65536) | 0;
@@ -5875,7 +6930,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       } catch(e) {
         err(`growMemory: Attempted to grow heap from ${oldHeapSize} bytes to ${size} bytes, but got error: ${e}`);
       }
-      // implicit 0 return to save code size (caller will cast "undefined" into 0
+      // implicit 0 return to save code size (caller will cast 'undefined' into 0
       // anyhow)
     };
   var _emscripten_resize_heap = (requestedSize) => {
@@ -5933,15 +6988,12 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       err(`Failed to grow the heap from ${oldSize} bytes to ${newSize} bytes, not enough memory!`);
       return false;
     };
-
   var ENV = {
   };
-  
-  var getExecutableName = () => thisProgram || './this.program';
+  var getExecutableName = () => thisProgram;
   var getEnvStrings = () => {
       if (!getEnvStrings.strings) {
         // Default values.
-        // Browser language detection #8751
         var lang = (globalThis.navigator?.language ?? 'C').replace('-', '_') + '.UTF-8';
         var env = {
           'USER': 'web_user',
@@ -5968,7 +7020,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       return getEnvStrings.strings;
     };
-  
   var _environ_get = (__environ, environ_buf) => {
       var bufSize = 0;
       var envp = 0;
@@ -5980,8 +7031,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       return 0;
     };
-
-  
   var _environ_sizes_get = (penviron_count, penviron_buf_size) => {
       var strings = getEnvStrings();
       HEAPU32[((penviron_count)>>2)] = strings.length;checkInt32(strings.length);
@@ -5992,7 +7041,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAPU32[((penviron_buf_size)>>2)] = bufSize;checkInt32(bufSize);
       return 0;
     };
-
   function _fd_close(fd) {
   try {
   
@@ -6000,11 +7048,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       FS.close(stream);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   }
-
+  
   function _fd_fdstat_get(fd, pbuf) {
   try {
   
@@ -6026,11 +7074,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAP64[(((pbuf)+(16))>>3)] = BigInt(rightsInheriting);checkInt64(rightsInheriting);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   }
-
+  
   /** @param {number=} offset */
   var doReadv = (stream, iov, iovcnt, offset) => {
       var ret = 0;
@@ -6038,17 +7086,27 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         var ptr = HEAPU32[((iov)>>2)];
         var len = HEAPU32[(((iov)+(4))>>2)];
         iov += 8;
-        var curr = FS.read(stream, HEAP8, ptr, len, offset);
+        try {
+          var curr = FS.read(stream, HEAP8, ptr, len, offset);
+        } catch (e) {
+          // On a non-blocking stream a subsequent read may would-block after we
+          // already gathered data. POSIX readv is a single gather-read: return
+          // what we have rather than failing the whole call.
+          if (ret > 0 && e instanceof FS.ErrnoError &&
+              (e.errno == 6 || e.errno == 6)) {
+            break;
+          }
+          throw e;
+        }
         if (curr < 0) return -1;
         ret += curr;
         if (curr < len) break; // nothing more to read
-        if (typeof offset != 'undefined') {
+        if (typeof offset !== 'undefined') {
           offset += curr;
         }
       }
       return ret;
     };
-  
   function _fd_read(fd, iov, iovcnt, pnum) {
   try {
   
@@ -6057,11 +7115,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAPU32[((pnum)>>2)] = num;checkInt32(num);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   }
-
   
   function _fd_seek(fd, offset, whence, newOffset) {
     offset = bigintToI53Checked(offset);
@@ -6069,19 +7126,18 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   
   try {
   
-      if (isNaN(offset)) return 61;
+      if (isNaN(offset)) return 22;
       var stream = SYSCALLS.getStreamFromFD(fd);
       FS.llseek(stream, offset, whence);
       HEAP64[((newOffset)>>3)] = BigInt(stream.position);checkInt64(stream.position);
-      if (stream.getdents && offset === 0 && whence === 0) stream.getdents = null; // reset readdir state
+      if (stream.getdents && !offset && whence === 0) stream.getdents = null; // reset readdir state
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   ;
   }
-
   function _fd_sync(fd) {
   try {
   
@@ -6089,32 +7145,35 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       var rtn = stream.stream_ops?.fsync?.(stream);
       return rtn;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   }
-
+  
   /** @param {number=} offset */
   var doWritev = (stream, iov, iovcnt, offset) => {
-      var ret = 0;
-      for (var i = 0; i < iovcnt; i++) {
+      // Gather all iovecs into one contiguous buffer and issue a single
+      // FS.write, matching POSIX writev's single gather-write semantics (as
+      // __syscall_sendmsg already does). Per-iovec writes fragment a stream
+      // socket send into multiple segments, breaking stream byte semantics.
+      if (iovcnt == 1) {
+        // Single iovec: write directly from HEAP8, no gather buffer needed.
+        return FS.write(stream, HEAP8, HEAPU32[((iov)>>2)], HEAPU32[(((iov)+(4))>>2)], offset);
+      }
+      var total = 0;
+      for (var i = 0, p = iov; i < iovcnt; i++, p += 8) {
+        total += HEAPU32[(((p)+(4))>>2)];
+      }
+      var view = new Uint8Array(total);
+      var voff = 0;
+      for (var i = 0; i < iovcnt; i++, iov += 8) {
         var ptr = HEAPU32[((iov)>>2)];
         var len = HEAPU32[(((iov)+(4))>>2)];
-        iov += 8;
-        var curr = FS.write(stream, HEAP8, ptr, len, offset);
-        if (curr < 0) return -1;
-        ret += curr;
-        if (curr < len) {
-          // No more space to write.
-          break;
-        }
-        if (typeof offset != 'undefined') {
-          offset += curr;
-        }
+        view.set(HEAPU8.subarray(ptr, ptr + len), voff);
+        voff += len;
       }
-      return ret;
+      return FS.write(stream, view, 0, total, offset);
     };
-  
   function _fd_write(fd, iov, iovcnt, pnum) {
   try {
   
@@ -6123,24 +7182,63 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       HEAPU32[((pnum)>>2)] = num;checkInt32(num);
       return 0;
     } catch (e) {
-    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    if (typeof FS === 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return e.errno;
   }
   }
+  
+
+
+  /** @type {!Float32Array} */
+  var HEAPF32;
+  /** @type {!Float64Array} */
+  var HEAPF64;
+  
+    /**
+   * @param {number} ptr
+   * @param {number} value
+   * @param {string} type
+   */
+  function setValue(ptr, value, type = 'i8') {
+    if (type.endsWith('*')) type = '*';
+    switch (type) {
+      case 'i1': HEAP8[ptr] = value;checkInt8(value); break;
+      case 'i8': HEAP8[ptr] = value;checkInt8(value); break;
+      case 'i16': HEAP16[((ptr)>>1)] = value;checkInt16(value); break;
+      case 'i32': HEAP32[((ptr)>>2)] = value;checkInt32(value); break;
+      case 'i64': HEAP64[((ptr)>>3)] = BigInt(value);checkInt64(value); break;
+      case 'float': HEAPF32[((ptr)>>2)] = value; break;
+      case 'double': HEAPF64[((ptr)>>3)] = value; break;
+      case '*': HEAPU32[((ptr)>>2)] = value; break;
+      default: abort(`invalid type for setValue: ${type}`);
+    }
+  }
+  
+    /**
+   * @param {number} ptr
+   * @param {string} type
+   */
+  function getValue(ptr, type = 'i8') {
+    if (type.endsWith('*')) type = '*';
+    switch (type) {
+      case 'i1': return HEAP8[ptr];
+      case 'i8': return HEAP8[ptr];
+      case 'i16': return HEAP16[((ptr)>>1)];
+      case 'i32': return HEAP32[((ptr)>>2)];
+      case 'i64': return HEAP64[((ptr)>>3)];
+      case 'float': return HEAPF32[((ptr)>>2)];
+      case 'double': return HEAPF64[((ptr)>>3)];
+      case '*': return HEAPU32[((ptr)>>2)];
+      default: abort(`invalid type for getValue: ${type}`);
+    }
+  }
+
 
   var getCFunc = (ident) => {
       var func = Module['_' + ident]; // closure exported function
-      assert(func, 'Cannot call unknown function ' + ident + ', make sure it is exported');
+      assert(func, `Cannot call unknown function ${ident}, make sure it is exported`);
       return func;
     };
-  
-  var writeArrayToMemory = (array, buffer) => {
-      assert(array.length >= 0, 'writeArrayToMemory array must have a length (should be an array or typed array)')
-      HEAP8.set(array, buffer);
-    };
-  
-  
-  
   var stackAlloc = (sz) => __emscripten_stack_alloc(sz);
   var stringToUTF8OnStack = (str) => {
       var size = lengthBytesUTF8(str) + 1;
@@ -6148,10 +7246,10 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       stringToUTF8(str, ret, size);
       return ret;
     };
-  
-  
-  
-  
+  var writeArrayToMemory = (array, buffer) => {
+      assert(array.length >= 0, 'writeArrayToMemory array must have a length (should be an array or typed array)')
+      HEAP8.set(array, buffer);
+    };
   
     /**
    * @param {string|null=} returnType
@@ -6187,12 +7285,12 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       var func = getCFunc(ident);
       var cArgs = [];
       var stack = 0;
-      assert(returnType !== 'array', 'Return type should not be "array".');
+      assert(returnType !== 'array', 'return type should not be "array"');
       if (args) {
         for (var i = 0; i < args.length; i++) {
           var converter = toC[argTypes[i]];
           if (converter) {
-            if (stack === 0) stack = stackSave();
+            if (!stack) stack = stackSave();
             cArgs[i] = converter(args[i]);
           } else {
             cArgs[i] = args[i];
@@ -6201,7 +7299,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       }
       var ret = func(...cArgs);
       function onDone(ret) {
-        if (stack !== 0) stackRestore(stack);
+        if (stack) stackRestore(stack);
         return convertReturnValue(ret);
       }
   
@@ -6222,8 +7320,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
 
 
 
-  
-  
   var stringToNewUTF8 = (str) => {
       var size = lengthBytesUTF8(str) + 1;
       var ret = _malloc(size);
@@ -6231,14 +7327,9 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       return ret;
     };
 
-
-  var functionsInTableMap;
-  
   var freeTableIndexes = [];
-  
+  var functionsInTableMap;
   var wasmTableMirror = [];
-  
-  
   var getWasmTableEntry = (funcPtr) => {
       var func = wasmTableMirror[funcPtr];
       if (!func) {
@@ -6246,11 +7337,9 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         wasmTableMirror[funcPtr] = func = wasmTable.get(funcPtr);
       }
       /** @suppress {checkTypes} */
-      assert(wasmTable.get(funcPtr) == func, 'JavaScript-side Wasm function table mirror is out of date!');
+      assert(wasmTable.get(funcPtr) == func, 'table mirror is out of date');
       return func;
     };
-  
-  
   var setWasmTableEntry = (idx, func) => {
       /** @suppress {checkTypes} */
       wasmTable.set(idx, func);
@@ -6260,55 +7349,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       /** @suppress {checkTypes} */
       wasmTableMirror[idx] = wasmTable.get(idx);
     };
-  
   var removeFunction = (index) => {
       functionsInTableMap.delete(getWasmTableEntry(index));
       setWasmTableEntry(index, null);
       freeTableIndexes.push(index);
     };
-
-  
-  var updateTableMap = (offset, count) => {
-      if (functionsInTableMap) {
-        for (var i = offset; i < offset + count; i++) {
-          var item = getWasmTableEntry(i);
-          // Ignore null values.
-          if (item) {
-            functionsInTableMap.set(item, i);
-          }
-        }
-      }
-    };
-  
-  
-  var getFunctionAddress = (func) => {
-      // First, create the map if this is the first use.
-      if (!functionsInTableMap) {
-        functionsInTableMap = new WeakMap();
-        updateTableMap(0, wasmTable.length);
-      }
-      return functionsInTableMap.get(func) || 0;
-    };
-  
-  
-  
-  var getEmptyTableSlot = () => {
-      // Reuse a free index if there is one, otherwise grow.
-      if (freeTableIndexes.length) {
-        return freeTableIndexes.pop();
-      }
-      try {
-        // Grow the table
-        return wasmTable['grow'](1);
-      } catch (err) {
-        if (!(err instanceof RangeError)) {
-          throw err;
-        }
-        abort('Unable to grow wasm table. Set ALLOW_TABLE_GROWTH.');
-      }
-    };
-  
-  
   var uleb128EncodeWithLen = (arr) => {
       const n = arr.length;
       assert(n < 16384);
@@ -6316,8 +7361,6 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       // but we don't care as it's only used in a temporary representation.
       return [(n % 128) | 128, n >> 7, ...arr];
     };
-  
-  
   var wasmTypeCodes = {
       'i': 0x7f, // i32
       'p': 0x7f, // i32
@@ -6332,8 +7375,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       return code;
     }));
   var convertJsFunctionToWasm = (func, sig) => {
-  
-      // Rest of the module is static
+      // TODO: If the type reflection proposal ever makes progress we can use
+      // it here instead of creatign a new module.
       var bytes = Uint8Array.of(
         0x00, 0x61, 0x73, 0x6d, // magic ("\0asm")
         0x01, 0x00, 0x00, 0x00, // version: 1
@@ -6364,12 +7407,43 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
       var wrappedFunc = instance.exports['f'];
       return wrappedFunc;
     };
-  
-  
-  
+  var getEmptyTableSlot = () => {
+      // Reuse a free index if there is one, otherwise grow.
+      if (freeTableIndexes.length) {
+        return freeTableIndexes.pop();
+      }
+      try {
+        // Grow the table
+        return wasmTable['grow'](1);
+      } catch (err) {
+        if (!(err instanceof RangeError)) {
+          throw err;
+        }
+        abort('Unable to grow wasm table. Set ALLOW_TABLE_GROWTH.');
+      }
+    };
+  var updateTableMap = (offset, count) => {
+      if (functionsInTableMap) {
+        for (var i = offset; i < offset + count; i++) {
+          var item = getWasmTableEntry(i);
+          // Ignore null values.
+          if (item) {
+            functionsInTableMap.set(item, i);
+          }
+        }
+      }
+    };
+  var getFunctionAddress = (func) => {
+      // First, create the map if this is the first use.
+      if (!functionsInTableMap) {
+        functionsInTableMap = new WeakMap();
+        updateTableMap(0, wasmTable.length);
+      }
+      return functionsInTableMap.get(func) || 0;
+    };
   /** @param {string=} sig */
   var addFunction = (func, sig) => {
-      assert(typeof func != 'undefined');
+      assert(typeof func !== 'undefined');
       // Check if the function is already in the table, to ensure each function
       // gets a unique index.
       var rtn = getFunctionAddress(func);
@@ -6396,7 +7470,7 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
         if (!(err instanceof TypeError)) {
           throw err;
         }
-        assert(typeof sig != 'undefined', 'Missing signature argument to addFunction: ' + func);
+        assert(typeof sig !== 'undefined', 'Missing signature argument to addFunction: ' + func);
         var wrapped = convertJsFunctionToWasm(func, sig);
         setWasmTableEntry(ret, wrapped);
       }
@@ -6405,7 +7479,8 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   
       return ret;
     };
-
+  var syscallGetVarargP = syscallGetVarargI;
+  
   FS.createPreloadedFile = FS_createPreloadedFile;
   FS.preloadFile = FS_preloadFile;
   FS.staticInit();;
@@ -6427,29 +7502,32 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
 
   checkIncomingModuleAPI();
 
-  if (Module['arguments']) arguments_ = Module['arguments'];
+  if (Module['arguments']) programArgs = Module['arguments'];
   if (Module['thisProgram']) thisProgram = Module['thisProgram'];
 
   // Assertions on removed incoming Module JS APIs.
-  assert(typeof Module['memoryInitializerPrefixURL'] == 'undefined', 'Module.memoryInitializerPrefixURL option was removed, use Module.locateFile instead');
-  assert(typeof Module['pthreadMainPrefixURL'] == 'undefined', 'Module.pthreadMainPrefixURL option was removed, use Module.locateFile instead');
-  assert(typeof Module['cdInitializerPrefixURL'] == 'undefined', 'Module.cdInitializerPrefixURL option was removed, use Module.locateFile instead');
-  assert(typeof Module['filePackagePrefixURL'] == 'undefined', 'Module.filePackagePrefixURL option was removed, use Module.locateFile instead');
-  assert(typeof Module['read'] == 'undefined', 'Module.read option was removed');
-  assert(typeof Module['readAsync'] == 'undefined', 'Module.readAsync option was removed (modify readAsync in JS)');
-  assert(typeof Module['readBinary'] == 'undefined', 'Module.readBinary option was removed (modify readBinary in JS)');
-  assert(typeof Module['setWindowTitle'] == 'undefined', 'Module.setWindowTitle option was removed (modify emscripten_set_window_title in JS)');
-  assert(typeof Module['TOTAL_MEMORY'] == 'undefined', 'Module.TOTAL_MEMORY has been renamed Module.INITIAL_MEMORY');
-  assert(typeof Module['ENVIRONMENT'] == 'undefined', 'Module.ENVIRONMENT has been deprecated. To force the environment, use the ENVIRONMENT compile-time option (for example, -sENVIRONMENT=web or -sENVIRONMENT=node)');
-  assert(typeof Module['STACK_SIZE'] == 'undefined', 'STACK_SIZE can no longer be set at runtime.  Use -sSTACK_SIZE at link time')
+  assert(typeof Module['memoryInitializerPrefixURL'] === 'undefined', 'Module.memoryInitializerPrefixURL option was removed, use Module.locateFile instead');
+  assert(typeof Module['pthreadMainPrefixURL'] === 'undefined', 'Module.pthreadMainPrefixURL option was removed, use Module.locateFile instead');
+  assert(typeof Module['cdInitializerPrefixURL'] === 'undefined', 'Module.cdInitializerPrefixURL option was removed, use Module.locateFile instead');
+  assert(typeof Module['filePackagePrefixURL'] === 'undefined', 'Module.filePackagePrefixURL option was removed, use Module.locateFile instead');
+  assert(typeof Module['read'] === 'undefined', 'Module.read option was removed');
+  assert(typeof Module['readAsync'] === 'undefined', 'Module.readAsync option was removed (modify readAsync in JS)');
+  assert(typeof Module['readBinary'] === 'undefined', 'Module.readBinary option was removed (modify readBinary in JS)');
+  assert(typeof Module['setWindowTitle'] === 'undefined', 'Module.setWindowTitle option was removed (modify emscripten_set_window_title in JS)');
+  assert(typeof Module['TOTAL_MEMORY'] === 'undefined', 'Module.TOTAL_MEMORY has been renamed Module.INITIAL_MEMORY');
+  assert(typeof Module['ENVIRONMENT'] === 'undefined', 'Module.ENVIRONMENT has been deprecated. To force the environment, use the ENVIRONMENT compile-time option (for example, -sENVIRONMENT=web or -sENVIRONMENT=node)');
+  assert(typeof Module['STACK_SIZE'] === 'undefined', 'STACK_SIZE can no longer be set at runtime.  Use -sSTACK_SIZE at link time')
   // If memory is defined in wasm, the user can't provide it, or set INITIAL_MEMORY
-  assert(typeof Module['wasmMemory'] == 'undefined', 'Use of `wasmMemory` detected.  Use -sIMPORTED_MEMORY to define wasmMemory externally');
-  assert(typeof Module['INITIAL_MEMORY'] == 'undefined', 'Detected runtime INITIAL_MEMORY setting.  Use -sIMPORTED_MEMORY to define wasmMemory dynamically');
+  assert(typeof Module['wasmMemory'] === 'undefined', 'Use of `wasmMemory` detected.  Use -sIMPORTED_MEMORY to define wasmMemory externally');
+  assert(typeof Module['INITIAL_MEMORY'] === 'undefined', 'Detected runtime INITIAL_MEMORY setting.  Use -sIMPORTED_MEMORY to define wasmMemory dynamically');
 
-  if (Module['preInit']) {
-    if (typeof Module['preInit'] == 'function') Module['preInit'] = [Module['preInit']];
-    while (Module['preInit'].length > 0) {
-      Module['preInit'].shift()();
+  var preInit = Module['preInit'];
+  if (preInit) {
+    if (typeof preInit === 'function') Module['preInit'] = preInit = [preInit];
+    // Written as a loop so that preInit functions that themselves add more
+    // preInit functions.  Is this actually needed?
+    while (preInit.length > 0) {
+      preInit.shift()();
     }
   }
   consumedModuleProp('preInit');
@@ -6463,6 +7541,7 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   Module['addFunction'] = addFunction;
   Module['removeFunction'] = removeFunction;
   Module['UTF8ToString'] = UTF8ToString;
+  Module['stringToUTF8'] = stringToUTF8;
   Module['stringToNewUTF8'] = stringToNewUTF8;
   Module['writeArrayToMemory'] = writeArrayToMemory;
   var missingLibrarySymbols = [
@@ -6534,12 +7613,14 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   'registerOrientationChangeEventCallback',
   'fillFullscreenChangeEventData',
   'registerFullscreenChangeEventCallback',
+  'callCanvasResizedCallback',
   'JSEvents_requestFullscreen',
   'JSEvents_resizeCanvasForFullscreen',
   'registerRestoreOldStyle',
   'hideEverythingExceptGivenElement',
   'restoreHiddenElements',
   'setLetterbox',
+  'currentFullscreenStrategy',
   'softFullscreenResizeWebGLRenderTarget',
   'doRequestFullscreen',
   'fillPointerlockChangeEventData',
@@ -6562,6 +7643,7 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   'wasiRightsToMuslOFlags',
   'wasiOFlagsToMuslOFlags',
   'safeSetTimeout',
+  'safeClearTimeout',
   'setImmediateWrapped',
   'safeRequestAnimationFrame',
   'clearImmediateWrapped',
@@ -6569,10 +7651,9 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   'registerPreMainLoop',
   'getPromise',
   'makePromise',
+  'addPromise',
   'idsToPromises',
   'makePromiseCallback',
-  'ExceptionInfo',
-  'findMatchingCatch',
   'Browser_asyncPrepareDataCounter',
   'arraySum',
   'addDays',
@@ -6594,6 +7675,7 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   'colorChannelsInGlTextureFormat',
   'emscriptenWebGLGetTexPixelData',
   'emscriptenWebGLGetUniform',
+  'webglGetProgramUniformLocation',
   'webglGetUniformLocation',
   'webglPrepareUniformLocationsBeforeFirstUse',
   'webglGetLeftBracePos',
@@ -6602,14 +7684,10 @@ if (Module['wasmBinary']) wasmBinary = Module['wasmBinary'];
   'writeGLArray',
   'registerWebGlEventCallback',
   'runAndAbortIfError',
-  'ALLOC_NORMAL',
-  'ALLOC_STACK',
-  'allocate',
   'writeStringToMemory',
   'writeAsciiToMemory',
   'allocateUTF8',
   'allocateUTF8OnStack',
-  'demangle',
   'stackTrace',
   'getNativeTypeSize',
 ];
@@ -6622,22 +7700,22 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'callMain',
   'abort',
   'wasmExports',
-  'HEAPF32',
-  'HEAPF64',
-  'HEAP8',
-  'HEAPU8',
-  'HEAP16',
-  'HEAPU16',
-  'HEAP32',
-  'HEAPU32',
-  'HEAP64',
-  'HEAPU64',
   'writeStackCookie',
   'checkStackCookie',
   'readI53FromI64',
   'INT53_MAX',
   'INT53_MIN',
   'bigintToI53Checked',
+  'HEAP8',
+  'HEAPU8',
+  'HEAP16',
+  'HEAPU16',
+  'HEAP32',
+  'HEAPU32',
+  'HEAPF32',
+  'HEAPF64',
+  'HEAP64',
+  'HEAPU64',
   'ptrToString',
   'zeroMemory',
   'getHeapMax',
@@ -6648,11 +7726,11 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'strError',
   'DNS',
   'Protocols',
-  'Sockets',
   'timers',
   'warnOnce',
   'readEmAsmArgsArray',
   'getExecutableName',
+  'getWasmTableEntry',
   'asyncLoad',
   'alignMemory',
   'mmapAlloc',
@@ -6678,7 +7756,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'UTF8Decoder',
   'UTF8ArrayToString',
   'stringToUTF8Array',
-  'stringToUTF8',
   'lengthBytesUTF8',
   'intArrayFromString',
   'UTF16Decoder',
@@ -6686,7 +7763,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'JSEvents',
   'specialHTMLTargets',
   'findCanvasEventTarget',
-  'currentFullscreenStrategy',
   'restoreOldWindowedStyle',
   'UNWIND_CACHE',
   'ExitStatus',
@@ -6697,19 +7773,12 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'initRandomFill',
   'randomFill',
   'emSetImmediate',
-  'emClearImmediate_deps',
   'emClearImmediate',
   'promiseMap',
-  'uncaughtExceptionCount',
-  'exceptionLast',
-  'exceptionCaught',
   'Browser',
   'requestFullscreen',
-  'requestFullScreen',
   'setCanvasSize',
-  'getUserMedia',
   'createContext',
-  'getPreloadedImageData__data',
   'wget',
   'MONTH_DAYS_REGULAR',
   'MONTH_DAYS_LEAP',
@@ -6723,6 +7792,7 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_preloadFile',
   'FS_modeStringToFlags',
   'FS_getMode',
+  'FS_fileDataToTypedArray',
   'FS_stdin_getChar_buffer',
   'FS_stdin_getChar',
   'FS_unlink',
@@ -6730,18 +7800,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_createDevice',
   'FS_readFile',
   'FS',
-  'FS_root',
-  'FS_mounts',
-  'FS_devices',
-  'FS_streams',
-  'FS_nextInode',
-  'FS_nameTable',
-  'FS_currentPath',
-  'FS_initialized',
-  'FS_ignorePermissions',
-  'FS_filesystems',
-  'FS_syncFSRequests',
-  'FS_readFiles',
   'FS_lookupPath',
   'FS_getPath',
   'FS_hashName',
@@ -6773,7 +7831,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_closeStream',
   'FS_dupStream',
   'FS_doSetAttr',
-  'FS_chrdev_stream_ops',
   'FS_major',
   'FS_minor',
   'FS_makedev',
@@ -6792,6 +7849,7 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_mkdir',
   'FS_mkdev',
   'FS_symlink',
+  'FS_link',
   'FS_rename',
   'FS_rmdir',
   'FS_readdir',
@@ -6830,18 +7888,11 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_staticInit',
   'FS_init',
   'FS_quit',
-  'FS_findObject',
   'FS_analyzePath',
   'FS_createFile',
   'FS_createDataFile',
   'FS_forceLoadFile',
   'FS_createLazyFile',
-  'FS_absolutePath',
-  'FS_createFolder',
-  'FS_createLink',
-  'FS_joinPath',
-  'FS_mmapAlloc',
-  'FS_standardizePath',
   'MEMFS',
   'TTY',
   'PIPEFS',
@@ -6871,7 +7922,12 @@ unexportedSymbols.forEach(unexportedRuntimeSymbol);
 
 function checkIncomingModuleAPI() {
   ignoredModuleProp('fetchSettings');
+  ignoredModuleProp('onSbrkGrow');
+  ignoredModuleProp('onCOSCacheHit');
+  ignoredModuleProp('onCOSCacheMiss');
+  ignoredModuleProp('onCOSStore');
 }
+function warnLegacyFunction(name) { console.warn("sql.js: legacy function " + UTF8ToString(name) + "() is deprecated and will be disabled by default in the next major " + "version. Initialize with useOldExtensionFunctions: false to use " + "native SQLite functions. See https://github.com/sql-js/sql.js/pull/647"); }
 
 // Imports from the Wasm binary.
 var _sqlite3_free = Module['_sqlite3_free'] = makeInvalidEarlyAccess('_sqlite3_free');
@@ -6885,6 +7941,9 @@ var _sqlite3_column_name = Module['_sqlite3_column_name'] = makeInvalidEarlyAcce
 var _sqlite3_column_text = Module['_sqlite3_column_text'] = makeInvalidEarlyAccess('_sqlite3_column_text');
 var _sqlite3_column_type = Module['_sqlite3_column_type'] = makeInvalidEarlyAccess('_sqlite3_column_type');
 var _sqlite3_errmsg = Module['_sqlite3_errmsg'] = makeInvalidEarlyAccess('_sqlite3_errmsg');
+var _sqlite3_backup_init = Module['_sqlite3_backup_init'] = makeInvalidEarlyAccess('_sqlite3_backup_init');
+var _sqlite3_backup_step = Module['_sqlite3_backup_step'] = makeInvalidEarlyAccess('_sqlite3_backup_step');
+var _sqlite3_backup_finish = Module['_sqlite3_backup_finish'] = makeInvalidEarlyAccess('_sqlite3_backup_finish');
 var _sqlite3_clear_bindings = Module['_sqlite3_clear_bindings'] = makeInvalidEarlyAccess('_sqlite3_clear_bindings');
 var _sqlite3_value_blob = Module['_sqlite3_value_blob'] = makeInvalidEarlyAccess('_sqlite3_value_blob');
 var _sqlite3_value_bytes = Module['_sqlite3_value_bytes'] = makeInvalidEarlyAccess('_sqlite3_value_bytes');
@@ -6913,17 +7972,25 @@ var _sqlite3_sql = Module['_sqlite3_sql'] = makeInvalidEarlyAccess('_sqlite3_sql
 var _sqlite3_normalized_sql = Module['_sqlite3_normalized_sql'] = makeInvalidEarlyAccess('_sqlite3_normalized_sql');
 var _sqlite3_changes = Module['_sqlite3_changes'] = makeInvalidEarlyAccess('_sqlite3_changes');
 var _sqlite3_close_v2 = Module['_sqlite3_close_v2'] = makeInvalidEarlyAccess('_sqlite3_close_v2');
+var _sqlite3_progress_handler = Module['_sqlite3_progress_handler'] = makeInvalidEarlyAccess('_sqlite3_progress_handler');
+var _sqlite3_interrupt = Module['_sqlite3_interrupt'] = makeInvalidEarlyAccess('_sqlite3_interrupt');
 var _sqlite3_create_function_v2 = Module['_sqlite3_create_function_v2'] = makeInvalidEarlyAccess('_sqlite3_create_function_v2');
 var _sqlite3_update_hook = Module['_sqlite3_update_hook'] = makeInvalidEarlyAccess('_sqlite3_update_hook');
 var _sqlite3_open = Module['_sqlite3_open'] = makeInvalidEarlyAccess('_sqlite3_open');
+var _sqlite3_get_autocommit = Module['_sqlite3_get_autocommit'] = makeInvalidEarlyAccess('_sqlite3_get_autocommit');
 var _strerror = makeInvalidEarlyAccess('_strerror');
 var _malloc = Module['_malloc'] = makeInvalidEarlyAccess('_malloc');
 var _free = Module['_free'] = makeInvalidEarlyAccess('_free');
 var _RegisterExtensionFunctions = Module['_RegisterExtensionFunctions'] = makeInvalidEarlyAccess('_RegisterExtensionFunctions');
+var _sqljs_vfs_register = Module['_sqljs_vfs_register'] = makeInvalidEarlyAccess('_sqljs_vfs_register');
+var _sqljs_open_paged = Module['_sqljs_open_paged'] = makeInvalidEarlyAccess('_sqljs_open_paged');
+var _sqljs_vfs_register_rw = Module['_sqljs_vfs_register_rw'] = makeInvalidEarlyAccess('_sqljs_vfs_register_rw');
+var _sqljs_open_paged_rw = Module['_sqljs_open_paged_rw'] = makeInvalidEarlyAccess('_sqljs_open_paged_rw');
 var _fflush = makeInvalidEarlyAccess('_fflush');
 var _emscripten_stack_get_end = makeInvalidEarlyAccess('_emscripten_stack_get_end');
 var _emscripten_stack_get_base = makeInvalidEarlyAccess('_emscripten_stack_get_base');
 var _emscripten_builtin_memalign = makeInvalidEarlyAccess('_emscripten_builtin_memalign');
+var _setThrew = makeInvalidEarlyAccess('_setThrew');
 var _emscripten_stack_init = makeInvalidEarlyAccess('_emscripten_stack_init');
 var _emscripten_stack_get_free = makeInvalidEarlyAccess('_emscripten_stack_get_free');
 var __emscripten_stack_restore = makeInvalidEarlyAccess('__emscripten_stack_restore');
@@ -6936,120 +8003,142 @@ var wasmMemory = makeInvalidEarlyAccess('wasmMemory');
 var wasmTable = makeInvalidEarlyAccess('wasmTable');
 
 function assignWasmExports(wasmExports) {
-  assert(typeof wasmExports['sqlite3_free'] != 'undefined', 'missing Wasm export: sqlite3_free');
-  assert(typeof wasmExports['sqlite3_value_text'] != 'undefined', 'missing Wasm export: sqlite3_value_text');
-  assert(typeof wasmExports['sqlite3_prepare_v2'] != 'undefined', 'missing Wasm export: sqlite3_prepare_v2');
-  assert(typeof wasmExports['sqlite3_step'] != 'undefined', 'missing Wasm export: sqlite3_step');
-  assert(typeof wasmExports['sqlite3_reset'] != 'undefined', 'missing Wasm export: sqlite3_reset');
-  assert(typeof wasmExports['sqlite3_exec'] != 'undefined', 'missing Wasm export: sqlite3_exec');
-  assert(typeof wasmExports['sqlite3_finalize'] != 'undefined', 'missing Wasm export: sqlite3_finalize');
-  assert(typeof wasmExports['sqlite3_column_name'] != 'undefined', 'missing Wasm export: sqlite3_column_name');
-  assert(typeof wasmExports['sqlite3_column_text'] != 'undefined', 'missing Wasm export: sqlite3_column_text');
-  assert(typeof wasmExports['sqlite3_column_type'] != 'undefined', 'missing Wasm export: sqlite3_column_type');
-  assert(typeof wasmExports['sqlite3_errmsg'] != 'undefined', 'missing Wasm export: sqlite3_errmsg');
-  assert(typeof wasmExports['sqlite3_clear_bindings'] != 'undefined', 'missing Wasm export: sqlite3_clear_bindings');
-  assert(typeof wasmExports['sqlite3_value_blob'] != 'undefined', 'missing Wasm export: sqlite3_value_blob');
-  assert(typeof wasmExports['sqlite3_value_bytes'] != 'undefined', 'missing Wasm export: sqlite3_value_bytes');
-  assert(typeof wasmExports['sqlite3_value_double'] != 'undefined', 'missing Wasm export: sqlite3_value_double');
-  assert(typeof wasmExports['sqlite3_value_int'] != 'undefined', 'missing Wasm export: sqlite3_value_int');
-  assert(typeof wasmExports['sqlite3_value_type'] != 'undefined', 'missing Wasm export: sqlite3_value_type');
-  assert(typeof wasmExports['sqlite3_result_blob'] != 'undefined', 'missing Wasm export: sqlite3_result_blob');
-  assert(typeof wasmExports['sqlite3_result_double'] != 'undefined', 'missing Wasm export: sqlite3_result_double');
-  assert(typeof wasmExports['sqlite3_result_error'] != 'undefined', 'missing Wasm export: sqlite3_result_error');
-  assert(typeof wasmExports['sqlite3_result_int'] != 'undefined', 'missing Wasm export: sqlite3_result_int');
-  assert(typeof wasmExports['sqlite3_result_int64'] != 'undefined', 'missing Wasm export: sqlite3_result_int64');
-  assert(typeof wasmExports['sqlite3_result_null'] != 'undefined', 'missing Wasm export: sqlite3_result_null');
-  assert(typeof wasmExports['sqlite3_result_text'] != 'undefined', 'missing Wasm export: sqlite3_result_text');
-  assert(typeof wasmExports['sqlite3_aggregate_context'] != 'undefined', 'missing Wasm export: sqlite3_aggregate_context');
-  assert(typeof wasmExports['sqlite3_column_count'] != 'undefined', 'missing Wasm export: sqlite3_column_count');
-  assert(typeof wasmExports['sqlite3_data_count'] != 'undefined', 'missing Wasm export: sqlite3_data_count');
-  assert(typeof wasmExports['sqlite3_column_blob'] != 'undefined', 'missing Wasm export: sqlite3_column_blob');
-  assert(typeof wasmExports['sqlite3_column_bytes'] != 'undefined', 'missing Wasm export: sqlite3_column_bytes');
-  assert(typeof wasmExports['sqlite3_column_double'] != 'undefined', 'missing Wasm export: sqlite3_column_double');
-  assert(typeof wasmExports['sqlite3_bind_blob'] != 'undefined', 'missing Wasm export: sqlite3_bind_blob');
-  assert(typeof wasmExports['sqlite3_bind_double'] != 'undefined', 'missing Wasm export: sqlite3_bind_double');
-  assert(typeof wasmExports['sqlite3_bind_int'] != 'undefined', 'missing Wasm export: sqlite3_bind_int');
-  assert(typeof wasmExports['sqlite3_bind_text'] != 'undefined', 'missing Wasm export: sqlite3_bind_text');
-  assert(typeof wasmExports['sqlite3_bind_parameter_index'] != 'undefined', 'missing Wasm export: sqlite3_bind_parameter_index');
-  assert(typeof wasmExports['sqlite3_sql'] != 'undefined', 'missing Wasm export: sqlite3_sql');
-  assert(typeof wasmExports['sqlite3_normalized_sql'] != 'undefined', 'missing Wasm export: sqlite3_normalized_sql');
-  assert(typeof wasmExports['sqlite3_changes'] != 'undefined', 'missing Wasm export: sqlite3_changes');
-  assert(typeof wasmExports['sqlite3_close_v2'] != 'undefined', 'missing Wasm export: sqlite3_close_v2');
-  assert(typeof wasmExports['sqlite3_create_function_v2'] != 'undefined', 'missing Wasm export: sqlite3_create_function_v2');
-  assert(typeof wasmExports['sqlite3_update_hook'] != 'undefined', 'missing Wasm export: sqlite3_update_hook');
-  assert(typeof wasmExports['sqlite3_open'] != 'undefined', 'missing Wasm export: sqlite3_open');
-  assert(typeof wasmExports['strerror'] != 'undefined', 'missing Wasm export: strerror');
-  assert(typeof wasmExports['malloc'] != 'undefined', 'missing Wasm export: malloc');
-  assert(typeof wasmExports['free'] != 'undefined', 'missing Wasm export: free');
-  assert(typeof wasmExports['RegisterExtensionFunctions'] != 'undefined', 'missing Wasm export: RegisterExtensionFunctions');
-  assert(typeof wasmExports['fflush'] != 'undefined', 'missing Wasm export: fflush');
-  assert(typeof wasmExports['emscripten_stack_get_end'] != 'undefined', 'missing Wasm export: emscripten_stack_get_end');
-  assert(typeof wasmExports['emscripten_stack_get_base'] != 'undefined', 'missing Wasm export: emscripten_stack_get_base');
-  assert(typeof wasmExports['emscripten_builtin_memalign'] != 'undefined', 'missing Wasm export: emscripten_builtin_memalign');
-  assert(typeof wasmExports['emscripten_stack_init'] != 'undefined', 'missing Wasm export: emscripten_stack_init');
-  assert(typeof wasmExports['emscripten_stack_get_free'] != 'undefined', 'missing Wasm export: emscripten_stack_get_free');
-  assert(typeof wasmExports['_emscripten_stack_restore'] != 'undefined', 'missing Wasm export: _emscripten_stack_restore');
-  assert(typeof wasmExports['_emscripten_stack_alloc'] != 'undefined', 'missing Wasm export: _emscripten_stack_alloc');
-  assert(typeof wasmExports['emscripten_stack_get_current'] != 'undefined', 'missing Wasm export: emscripten_stack_get_current');
-  assert(typeof wasmExports['__set_stack_limits'] != 'undefined', 'missing Wasm export: __set_stack_limits');
-  assert(typeof wasmExports['memory'] != 'undefined', 'missing Wasm export: memory');
-  assert(typeof wasmExports['__indirect_function_table'] != 'undefined', 'missing Wasm export: __indirect_function_table');
-  _sqlite3_free = Module['_sqlite3_free'] = createExportWrapper('sqlite3_free', 1);
-  _sqlite3_value_text = Module['_sqlite3_value_text'] = createExportWrapper('sqlite3_value_text', 1);
-  _sqlite3_prepare_v2 = Module['_sqlite3_prepare_v2'] = createExportWrapper('sqlite3_prepare_v2', 5);
-  _sqlite3_step = Module['_sqlite3_step'] = createExportWrapper('sqlite3_step', 1);
-  _sqlite3_reset = Module['_sqlite3_reset'] = createExportWrapper('sqlite3_reset', 1);
-  _sqlite3_exec = Module['_sqlite3_exec'] = createExportWrapper('sqlite3_exec', 5);
-  _sqlite3_finalize = Module['_sqlite3_finalize'] = createExportWrapper('sqlite3_finalize', 1);
-  _sqlite3_column_name = Module['_sqlite3_column_name'] = createExportWrapper('sqlite3_column_name', 2);
-  _sqlite3_column_text = Module['_sqlite3_column_text'] = createExportWrapper('sqlite3_column_text', 2);
-  _sqlite3_column_type = Module['_sqlite3_column_type'] = createExportWrapper('sqlite3_column_type', 2);
-  _sqlite3_errmsg = Module['_sqlite3_errmsg'] = createExportWrapper('sqlite3_errmsg', 1);
-  _sqlite3_clear_bindings = Module['_sqlite3_clear_bindings'] = createExportWrapper('sqlite3_clear_bindings', 1);
-  _sqlite3_value_blob = Module['_sqlite3_value_blob'] = createExportWrapper('sqlite3_value_blob', 1);
-  _sqlite3_value_bytes = Module['_sqlite3_value_bytes'] = createExportWrapper('sqlite3_value_bytes', 1);
-  _sqlite3_value_double = Module['_sqlite3_value_double'] = createExportWrapper('sqlite3_value_double', 1);
-  _sqlite3_value_int = Module['_sqlite3_value_int'] = createExportWrapper('sqlite3_value_int', 1);
-  _sqlite3_value_type = Module['_sqlite3_value_type'] = createExportWrapper('sqlite3_value_type', 1);
-  _sqlite3_result_blob = Module['_sqlite3_result_blob'] = createExportWrapper('sqlite3_result_blob', 4);
-  _sqlite3_result_double = Module['_sqlite3_result_double'] = createExportWrapper('sqlite3_result_double', 2);
-  _sqlite3_result_error = Module['_sqlite3_result_error'] = createExportWrapper('sqlite3_result_error', 3);
-  _sqlite3_result_int = Module['_sqlite3_result_int'] = createExportWrapper('sqlite3_result_int', 2);
-  _sqlite3_result_int64 = Module['_sqlite3_result_int64'] = createExportWrapper('sqlite3_result_int64', 2);
-  _sqlite3_result_null = Module['_sqlite3_result_null'] = createExportWrapper('sqlite3_result_null', 1);
-  _sqlite3_result_text = Module['_sqlite3_result_text'] = createExportWrapper('sqlite3_result_text', 4);
-  _sqlite3_aggregate_context = Module['_sqlite3_aggregate_context'] = createExportWrapper('sqlite3_aggregate_context', 2);
-  _sqlite3_column_count = Module['_sqlite3_column_count'] = createExportWrapper('sqlite3_column_count', 1);
-  _sqlite3_data_count = Module['_sqlite3_data_count'] = createExportWrapper('sqlite3_data_count', 1);
-  _sqlite3_column_blob = Module['_sqlite3_column_blob'] = createExportWrapper('sqlite3_column_blob', 2);
-  _sqlite3_column_bytes = Module['_sqlite3_column_bytes'] = createExportWrapper('sqlite3_column_bytes', 2);
-  _sqlite3_column_double = Module['_sqlite3_column_double'] = createExportWrapper('sqlite3_column_double', 2);
-  _sqlite3_bind_blob = Module['_sqlite3_bind_blob'] = createExportWrapper('sqlite3_bind_blob', 5);
-  _sqlite3_bind_double = Module['_sqlite3_bind_double'] = createExportWrapper('sqlite3_bind_double', 3);
-  _sqlite3_bind_int = Module['_sqlite3_bind_int'] = createExportWrapper('sqlite3_bind_int', 3);
-  _sqlite3_bind_text = Module['_sqlite3_bind_text'] = createExportWrapper('sqlite3_bind_text', 5);
-  _sqlite3_bind_parameter_index = Module['_sqlite3_bind_parameter_index'] = createExportWrapper('sqlite3_bind_parameter_index', 2);
-  _sqlite3_sql = Module['_sqlite3_sql'] = createExportWrapper('sqlite3_sql', 1);
-  _sqlite3_normalized_sql = Module['_sqlite3_normalized_sql'] = createExportWrapper('sqlite3_normalized_sql', 1);
-  _sqlite3_changes = Module['_sqlite3_changes'] = createExportWrapper('sqlite3_changes', 1);
-  _sqlite3_close_v2 = Module['_sqlite3_close_v2'] = createExportWrapper('sqlite3_close_v2', 1);
-  _sqlite3_create_function_v2 = Module['_sqlite3_create_function_v2'] = createExportWrapper('sqlite3_create_function_v2', 9);
-  _sqlite3_update_hook = Module['_sqlite3_update_hook'] = createExportWrapper('sqlite3_update_hook', 3);
-  _sqlite3_open = Module['_sqlite3_open'] = createExportWrapper('sqlite3_open', 2);
-  _strerror = createExportWrapper('strerror', 1);
-  _malloc = Module['_malloc'] = createExportWrapper('malloc', 1);
-  _free = Module['_free'] = createExportWrapper('free', 1);
-  _RegisterExtensionFunctions = Module['_RegisterExtensionFunctions'] = createExportWrapper('RegisterExtensionFunctions', 1);
-  _fflush = createExportWrapper('fflush', 1);
+  assert(typeof wasmExports['sqlite3_free'] !== 'undefined', 'missing Wasm export: sqlite3_free');
+  assert(typeof wasmExports['sqlite3_value_text'] !== 'undefined', 'missing Wasm export: sqlite3_value_text');
+  assert(typeof wasmExports['sqlite3_prepare_v2'] !== 'undefined', 'missing Wasm export: sqlite3_prepare_v2');
+  assert(typeof wasmExports['sqlite3_step'] !== 'undefined', 'missing Wasm export: sqlite3_step');
+  assert(typeof wasmExports['sqlite3_reset'] !== 'undefined', 'missing Wasm export: sqlite3_reset');
+  assert(typeof wasmExports['sqlite3_exec'] !== 'undefined', 'missing Wasm export: sqlite3_exec');
+  assert(typeof wasmExports['sqlite3_finalize'] !== 'undefined', 'missing Wasm export: sqlite3_finalize');
+  assert(typeof wasmExports['sqlite3_column_name'] !== 'undefined', 'missing Wasm export: sqlite3_column_name');
+  assert(typeof wasmExports['sqlite3_column_text'] !== 'undefined', 'missing Wasm export: sqlite3_column_text');
+  assert(typeof wasmExports['sqlite3_column_type'] !== 'undefined', 'missing Wasm export: sqlite3_column_type');
+  assert(typeof wasmExports['sqlite3_errmsg'] !== 'undefined', 'missing Wasm export: sqlite3_errmsg');
+  assert(typeof wasmExports['sqlite3_backup_init'] !== 'undefined', 'missing Wasm export: sqlite3_backup_init');
+  assert(typeof wasmExports['sqlite3_backup_step'] !== 'undefined', 'missing Wasm export: sqlite3_backup_step');
+  assert(typeof wasmExports['sqlite3_backup_finish'] !== 'undefined', 'missing Wasm export: sqlite3_backup_finish');
+  assert(typeof wasmExports['sqlite3_clear_bindings'] !== 'undefined', 'missing Wasm export: sqlite3_clear_bindings');
+  assert(typeof wasmExports['sqlite3_value_blob'] !== 'undefined', 'missing Wasm export: sqlite3_value_blob');
+  assert(typeof wasmExports['sqlite3_value_bytes'] !== 'undefined', 'missing Wasm export: sqlite3_value_bytes');
+  assert(typeof wasmExports['sqlite3_value_double'] !== 'undefined', 'missing Wasm export: sqlite3_value_double');
+  assert(typeof wasmExports['sqlite3_value_int'] !== 'undefined', 'missing Wasm export: sqlite3_value_int');
+  assert(typeof wasmExports['sqlite3_value_type'] !== 'undefined', 'missing Wasm export: sqlite3_value_type');
+  assert(typeof wasmExports['sqlite3_result_blob'] !== 'undefined', 'missing Wasm export: sqlite3_result_blob');
+  assert(typeof wasmExports['sqlite3_result_double'] !== 'undefined', 'missing Wasm export: sqlite3_result_double');
+  assert(typeof wasmExports['sqlite3_result_error'] !== 'undefined', 'missing Wasm export: sqlite3_result_error');
+  assert(typeof wasmExports['sqlite3_result_int'] !== 'undefined', 'missing Wasm export: sqlite3_result_int');
+  assert(typeof wasmExports['sqlite3_result_int64'] !== 'undefined', 'missing Wasm export: sqlite3_result_int64');
+  assert(typeof wasmExports['sqlite3_result_null'] !== 'undefined', 'missing Wasm export: sqlite3_result_null');
+  assert(typeof wasmExports['sqlite3_result_text'] !== 'undefined', 'missing Wasm export: sqlite3_result_text');
+  assert(typeof wasmExports['sqlite3_aggregate_context'] !== 'undefined', 'missing Wasm export: sqlite3_aggregate_context');
+  assert(typeof wasmExports['sqlite3_column_count'] !== 'undefined', 'missing Wasm export: sqlite3_column_count');
+  assert(typeof wasmExports['sqlite3_data_count'] !== 'undefined', 'missing Wasm export: sqlite3_data_count');
+  assert(typeof wasmExports['sqlite3_column_blob'] !== 'undefined', 'missing Wasm export: sqlite3_column_blob');
+  assert(typeof wasmExports['sqlite3_column_bytes'] !== 'undefined', 'missing Wasm export: sqlite3_column_bytes');
+  assert(typeof wasmExports['sqlite3_column_double'] !== 'undefined', 'missing Wasm export: sqlite3_column_double');
+  assert(typeof wasmExports['sqlite3_bind_blob'] !== 'undefined', 'missing Wasm export: sqlite3_bind_blob');
+  assert(typeof wasmExports['sqlite3_bind_double'] !== 'undefined', 'missing Wasm export: sqlite3_bind_double');
+  assert(typeof wasmExports['sqlite3_bind_int'] !== 'undefined', 'missing Wasm export: sqlite3_bind_int');
+  assert(typeof wasmExports['sqlite3_bind_text'] !== 'undefined', 'missing Wasm export: sqlite3_bind_text');
+  assert(typeof wasmExports['sqlite3_bind_parameter_index'] !== 'undefined', 'missing Wasm export: sqlite3_bind_parameter_index');
+  assert(typeof wasmExports['sqlite3_sql'] !== 'undefined', 'missing Wasm export: sqlite3_sql');
+  assert(typeof wasmExports['sqlite3_normalized_sql'] !== 'undefined', 'missing Wasm export: sqlite3_normalized_sql');
+  assert(typeof wasmExports['sqlite3_changes'] !== 'undefined', 'missing Wasm export: sqlite3_changes');
+  assert(typeof wasmExports['sqlite3_close_v2'] !== 'undefined', 'missing Wasm export: sqlite3_close_v2');
+  assert(typeof wasmExports['sqlite3_progress_handler'] !== 'undefined', 'missing Wasm export: sqlite3_progress_handler');
+  assert(typeof wasmExports['sqlite3_interrupt'] !== 'undefined', 'missing Wasm export: sqlite3_interrupt');
+  assert(typeof wasmExports['sqlite3_create_function_v2'] !== 'undefined', 'missing Wasm export: sqlite3_create_function_v2');
+  assert(typeof wasmExports['sqlite3_update_hook'] !== 'undefined', 'missing Wasm export: sqlite3_update_hook');
+  assert(typeof wasmExports['sqlite3_open'] !== 'undefined', 'missing Wasm export: sqlite3_open');
+  assert(typeof wasmExports['sqlite3_get_autocommit'] !== 'undefined', 'missing Wasm export: sqlite3_get_autocommit');
+  assert(typeof wasmExports['strerror'] !== 'undefined', 'missing Wasm export: strerror');
+  assert(typeof wasmExports['malloc'] !== 'undefined', 'missing Wasm export: malloc');
+  assert(typeof wasmExports['free'] !== 'undefined', 'missing Wasm export: free');
+  assert(typeof wasmExports['RegisterExtensionFunctions'] !== 'undefined', 'missing Wasm export: RegisterExtensionFunctions');
+  assert(typeof wasmExports['sqljs_vfs_register'] !== 'undefined', 'missing Wasm export: sqljs_vfs_register');
+  assert(typeof wasmExports['sqljs_open_paged'] !== 'undefined', 'missing Wasm export: sqljs_open_paged');
+  assert(typeof wasmExports['sqljs_vfs_register_rw'] !== 'undefined', 'missing Wasm export: sqljs_vfs_register_rw');
+  assert(typeof wasmExports['sqljs_open_paged_rw'] !== 'undefined', 'missing Wasm export: sqljs_open_paged_rw');
+  assert(typeof wasmExports['fflush'] !== 'undefined', 'missing Wasm export: fflush');
+  assert(typeof wasmExports['emscripten_stack_get_end'] !== 'undefined', 'missing Wasm export: emscripten_stack_get_end');
+  assert(typeof wasmExports['emscripten_stack_get_base'] !== 'undefined', 'missing Wasm export: emscripten_stack_get_base');
+  assert(typeof wasmExports['emscripten_builtin_memalign'] !== 'undefined', 'missing Wasm export: emscripten_builtin_memalign');
+  assert(typeof wasmExports['setThrew'] !== 'undefined', 'missing Wasm export: setThrew');
+  assert(typeof wasmExports['emscripten_stack_init'] !== 'undefined', 'missing Wasm export: emscripten_stack_init');
+  assert(typeof wasmExports['emscripten_stack_get_free'] !== 'undefined', 'missing Wasm export: emscripten_stack_get_free');
+  assert(typeof wasmExports['_emscripten_stack_restore'] !== 'undefined', 'missing Wasm export: _emscripten_stack_restore');
+  assert(typeof wasmExports['_emscripten_stack_alloc'] !== 'undefined', 'missing Wasm export: _emscripten_stack_alloc');
+  assert(typeof wasmExports['emscripten_stack_get_current'] !== 'undefined', 'missing Wasm export: emscripten_stack_get_current');
+  assert(typeof wasmExports['__set_stack_limits'] !== 'undefined', 'missing Wasm export: __set_stack_limits');
+  assert(typeof wasmExports['memory'] !== 'undefined', 'missing Wasm export: memory');
+  assert(typeof wasmExports['__indirect_function_table'] !== 'undefined', 'missing Wasm export: __indirect_function_table');
+  _sqlite3_free = Module['_sqlite3_free'] = createExportWrapper('sqlite3_free', wasmExports['sqlite3_free'], 1);
+  _sqlite3_value_text = Module['_sqlite3_value_text'] = createExportWrapper('sqlite3_value_text', wasmExports['sqlite3_value_text'], 1);
+  _sqlite3_prepare_v2 = Module['_sqlite3_prepare_v2'] = createExportWrapper('sqlite3_prepare_v2', wasmExports['sqlite3_prepare_v2'], 5);
+  _sqlite3_step = Module['_sqlite3_step'] = createExportWrapper('sqlite3_step', wasmExports['sqlite3_step'], 1);
+  _sqlite3_reset = Module['_sqlite3_reset'] = createExportWrapper('sqlite3_reset', wasmExports['sqlite3_reset'], 1);
+  _sqlite3_exec = Module['_sqlite3_exec'] = createExportWrapper('sqlite3_exec', wasmExports['sqlite3_exec'], 5);
+  _sqlite3_finalize = Module['_sqlite3_finalize'] = createExportWrapper('sqlite3_finalize', wasmExports['sqlite3_finalize'], 1);
+  _sqlite3_column_name = Module['_sqlite3_column_name'] = createExportWrapper('sqlite3_column_name', wasmExports['sqlite3_column_name'], 2);
+  _sqlite3_column_text = Module['_sqlite3_column_text'] = createExportWrapper('sqlite3_column_text', wasmExports['sqlite3_column_text'], 2);
+  _sqlite3_column_type = Module['_sqlite3_column_type'] = createExportWrapper('sqlite3_column_type', wasmExports['sqlite3_column_type'], 2);
+  _sqlite3_errmsg = Module['_sqlite3_errmsg'] = createExportWrapper('sqlite3_errmsg', wasmExports['sqlite3_errmsg'], 1);
+  _sqlite3_backup_init = Module['_sqlite3_backup_init'] = createExportWrapper('sqlite3_backup_init', wasmExports['sqlite3_backup_init'], 4);
+  _sqlite3_backup_step = Module['_sqlite3_backup_step'] = createExportWrapper('sqlite3_backup_step', wasmExports['sqlite3_backup_step'], 2);
+  _sqlite3_backup_finish = Module['_sqlite3_backup_finish'] = createExportWrapper('sqlite3_backup_finish', wasmExports['sqlite3_backup_finish'], 1);
+  _sqlite3_clear_bindings = Module['_sqlite3_clear_bindings'] = createExportWrapper('sqlite3_clear_bindings', wasmExports['sqlite3_clear_bindings'], 1);
+  _sqlite3_value_blob = Module['_sqlite3_value_blob'] = createExportWrapper('sqlite3_value_blob', wasmExports['sqlite3_value_blob'], 1);
+  _sqlite3_value_bytes = Module['_sqlite3_value_bytes'] = createExportWrapper('sqlite3_value_bytes', wasmExports['sqlite3_value_bytes'], 1);
+  _sqlite3_value_double = Module['_sqlite3_value_double'] = createExportWrapper('sqlite3_value_double', wasmExports['sqlite3_value_double'], 1);
+  _sqlite3_value_int = Module['_sqlite3_value_int'] = createExportWrapper('sqlite3_value_int', wasmExports['sqlite3_value_int'], 1);
+  _sqlite3_value_type = Module['_sqlite3_value_type'] = createExportWrapper('sqlite3_value_type', wasmExports['sqlite3_value_type'], 1);
+  _sqlite3_result_blob = Module['_sqlite3_result_blob'] = createExportWrapper('sqlite3_result_blob', wasmExports['sqlite3_result_blob'], 4);
+  _sqlite3_result_double = Module['_sqlite3_result_double'] = createExportWrapper('sqlite3_result_double', wasmExports['sqlite3_result_double'], 2);
+  _sqlite3_result_error = Module['_sqlite3_result_error'] = createExportWrapper('sqlite3_result_error', wasmExports['sqlite3_result_error'], 3);
+  _sqlite3_result_int = Module['_sqlite3_result_int'] = createExportWrapper('sqlite3_result_int', wasmExports['sqlite3_result_int'], 2);
+  _sqlite3_result_int64 = Module['_sqlite3_result_int64'] = createExportWrapper('sqlite3_result_int64', wasmExports['sqlite3_result_int64'], 2);
+  _sqlite3_result_null = Module['_sqlite3_result_null'] = createExportWrapper('sqlite3_result_null', wasmExports['sqlite3_result_null'], 1);
+  _sqlite3_result_text = Module['_sqlite3_result_text'] = createExportWrapper('sqlite3_result_text', wasmExports['sqlite3_result_text'], 4);
+  _sqlite3_aggregate_context = Module['_sqlite3_aggregate_context'] = createExportWrapper('sqlite3_aggregate_context', wasmExports['sqlite3_aggregate_context'], 2);
+  _sqlite3_column_count = Module['_sqlite3_column_count'] = createExportWrapper('sqlite3_column_count', wasmExports['sqlite3_column_count'], 1);
+  _sqlite3_data_count = Module['_sqlite3_data_count'] = createExportWrapper('sqlite3_data_count', wasmExports['sqlite3_data_count'], 1);
+  _sqlite3_column_blob = Module['_sqlite3_column_blob'] = createExportWrapper('sqlite3_column_blob', wasmExports['sqlite3_column_blob'], 2);
+  _sqlite3_column_bytes = Module['_sqlite3_column_bytes'] = createExportWrapper('sqlite3_column_bytes', wasmExports['sqlite3_column_bytes'], 2);
+  _sqlite3_column_double = Module['_sqlite3_column_double'] = createExportWrapper('sqlite3_column_double', wasmExports['sqlite3_column_double'], 2);
+  _sqlite3_bind_blob = Module['_sqlite3_bind_blob'] = createExportWrapper('sqlite3_bind_blob', wasmExports['sqlite3_bind_blob'], 5);
+  _sqlite3_bind_double = Module['_sqlite3_bind_double'] = createExportWrapper('sqlite3_bind_double', wasmExports['sqlite3_bind_double'], 3);
+  _sqlite3_bind_int = Module['_sqlite3_bind_int'] = createExportWrapper('sqlite3_bind_int', wasmExports['sqlite3_bind_int'], 3);
+  _sqlite3_bind_text = Module['_sqlite3_bind_text'] = createExportWrapper('sqlite3_bind_text', wasmExports['sqlite3_bind_text'], 5);
+  _sqlite3_bind_parameter_index = Module['_sqlite3_bind_parameter_index'] = createExportWrapper('sqlite3_bind_parameter_index', wasmExports['sqlite3_bind_parameter_index'], 2);
+  _sqlite3_sql = Module['_sqlite3_sql'] = createExportWrapper('sqlite3_sql', wasmExports['sqlite3_sql'], 1);
+  _sqlite3_normalized_sql = Module['_sqlite3_normalized_sql'] = createExportWrapper('sqlite3_normalized_sql', wasmExports['sqlite3_normalized_sql'], 1);
+  _sqlite3_changes = Module['_sqlite3_changes'] = createExportWrapper('sqlite3_changes', wasmExports['sqlite3_changes'], 1);
+  _sqlite3_close_v2 = Module['_sqlite3_close_v2'] = createExportWrapper('sqlite3_close_v2', wasmExports['sqlite3_close_v2'], 1);
+  _sqlite3_progress_handler = Module['_sqlite3_progress_handler'] = createExportWrapper('sqlite3_progress_handler', wasmExports['sqlite3_progress_handler'], 4);
+  _sqlite3_interrupt = Module['_sqlite3_interrupt'] = createExportWrapper('sqlite3_interrupt', wasmExports['sqlite3_interrupt'], 1);
+  _sqlite3_create_function_v2 = Module['_sqlite3_create_function_v2'] = createExportWrapper('sqlite3_create_function_v2', wasmExports['sqlite3_create_function_v2'], 9);
+  _sqlite3_update_hook = Module['_sqlite3_update_hook'] = createExportWrapper('sqlite3_update_hook', wasmExports['sqlite3_update_hook'], 3);
+  _sqlite3_open = Module['_sqlite3_open'] = createExportWrapper('sqlite3_open', wasmExports['sqlite3_open'], 2);
+  _sqlite3_get_autocommit = Module['_sqlite3_get_autocommit'] = createExportWrapper('sqlite3_get_autocommit', wasmExports['sqlite3_get_autocommit'], 1);
+  _strerror = createExportWrapper('strerror', wasmExports['strerror'], 1);
+  _malloc = Module['_malloc'] = createExportWrapper('malloc', wasmExports['malloc'], 1);
+  _free = Module['_free'] = createExportWrapper('free', wasmExports['free'], 1);
+  _RegisterExtensionFunctions = Module['_RegisterExtensionFunctions'] = createExportWrapper('RegisterExtensionFunctions', wasmExports['RegisterExtensionFunctions'], 1);
+  _sqljs_vfs_register = Module['_sqljs_vfs_register'] = createExportWrapper('sqljs_vfs_register', wasmExports['sqljs_vfs_register'], 2);
+  _sqljs_open_paged = Module['_sqljs_open_paged'] = createExportWrapper('sqljs_open_paged', wasmExports['sqljs_open_paged'], 2);
+  _sqljs_vfs_register_rw = Module['_sqljs_vfs_register_rw'] = createExportWrapper('sqljs_vfs_register_rw', wasmExports['sqljs_vfs_register_rw'], 2);
+  _sqljs_open_paged_rw = Module['_sqljs_open_paged_rw'] = createExportWrapper('sqljs_open_paged_rw', wasmExports['sqljs_open_paged_rw'], 2);
+  _fflush = createExportWrapper('fflush', wasmExports['fflush'], 1);
   _emscripten_stack_get_end = wasmExports['emscripten_stack_get_end'];
   _emscripten_stack_get_base = wasmExports['emscripten_stack_get_base'];
-  _emscripten_builtin_memalign = createExportWrapper('emscripten_builtin_memalign', 2);
+  _emscripten_builtin_memalign = createExportWrapper('emscripten_builtin_memalign', wasmExports['emscripten_builtin_memalign'], 2);
+  _setThrew = createExportWrapper('setThrew', wasmExports['setThrew'], 2);
   _emscripten_stack_init = wasmExports['emscripten_stack_init'];
   _emscripten_stack_get_free = wasmExports['emscripten_stack_get_free'];
   __emscripten_stack_restore = wasmExports['_emscripten_stack_restore'];
   __emscripten_stack_alloc = wasmExports['_emscripten_stack_alloc'];
   _emscripten_stack_get_current = wasmExports['emscripten_stack_get_current'];
-  ___set_stack_limits = Module['___set_stack_limits'] = createExportWrapper('__set_stack_limits', 2);
+  ___set_stack_limits = Module['___set_stack_limits'] = createExportWrapper('__set_stack_limits', wasmExports['__set_stack_limits'], 2);
   memory = wasmMemory = wasmExports['memory'];
   __indirect_function_table = wasmTable = wasmExports['__indirect_function_table'];
 }
@@ -7075,6 +8164,8 @@ var wasmImports = {
   __syscall_ftruncate64: ___syscall_ftruncate64,
   /** @export */
   __syscall_getcwd: ___syscall_getcwd,
+  /** @export */
+  __syscall_geteuid32: ___syscall_geteuid32,
   /** @export */
   __syscall_lstat64: ___syscall_lstat64,
   /** @export */
@@ -7128,7 +8219,9 @@ var wasmImports = {
   /** @export */
   fd_sync: _fd_sync,
   /** @export */
-  fd_write: _fd_write
+  fd_write: _fd_write,
+  /** @export */
+  warnLegacyFunction
 };
 
 
@@ -7146,53 +8239,37 @@ function stackCheckInit() {
   writeStackCookie();
 }
 
-function run() {
-
-  if (runDependencies > 0) {
-    dependenciesFulfilled = run;
-    return;
-  }
+async function run() {
+  assert(!calledRun);
+  calledRun = true;
 
   stackCheckInit();
 
   preRun();
 
-  // a preRun added a dependency, run will be called later
-  if (runDependencies > 0) {
-    dependenciesFulfilled = run;
-    return;
+  if (runDependencies) {
+    await resolveRunDependencies();
   }
 
-  function doRun() {
-    // run may have just been called through dependencies being fulfilled just in this very frame,
-    // or while the async setStatus time below was happening
-    assert(!calledRun);
-    calledRun = true;
-    Module['calledRun'] = true;
-
-    if (ABORT) return;
-
-    initRuntime();
-
-    Module['onRuntimeInitialized']?.();
-    consumedModuleProp('onRuntimeInitialized');
-
-    assert(!Module['_main'], 'compiled without a main, but one is present. if you added it from JS, use Module["onRuntimeInitialized"]');
-
-    postRun();
+  var setStatus = Module['setStatus'];
+  if (setStatus) {
+    setStatus('Running...');
+    // Yield to the event loop to allow the browser to paint "Running..."
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    // Then we want to clear the status text, but only after the rest of this function runs.
+    setTimeout(setStatus, 1, '');
   }
 
-  if (Module['setStatus']) {
-    Module['setStatus']('Running...');
-    setTimeout(() => {
-      setTimeout(() => Module['setStatus'](''), 1);
-      doRun();
-    }, 1);
-  } else
-  {
-    doRun();
-  }
-  checkStackCookie();
+  if (ABORT) return;
+
+  initRuntime();
+
+  Module['onRuntimeInitialized']?.();
+  consumedModuleProp('onRuntimeInitialized');
+
+  assert(!Module['_main'], 'compiled without a main, but one is present. if you added it from JS, use Module["onRuntimeInitialized"]');
+
+  postRun();
 }
 
 function checkUnflushedContent() {
@@ -7216,13 +8293,8 @@ function checkUnflushedContent() {
   try { // it doesn't matter if it fails
     _fflush(0);
     // also flush in the JS FS layer
-    for (var name of ['stdout', 'stderr']) {
-      var info = FS.analyzePath('/dev/' + name);
-      if (!info) return;
-      var stream = info.object;
-      var rdev = stream.rdev;
-      var tty = TTY.ttys[rdev];
-      if (tty?.output?.length) {
+    for (var tty of Object.values(TTY.ttys)) {
+      if (tty.output.length) {
         has = true;
       }
     }
@@ -7238,9 +8310,7 @@ var wasmExports;
 
 // With async instantation wasmExports is assigned asynchronously when the
 // instance is received.
-createWasm();
-
-run();
+createWasm().then(() => run());
 
 // end include: postamble.js
 
