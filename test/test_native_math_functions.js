@@ -41,15 +41,25 @@ async function testFunctions(assert, warnings) {
       assert.deepEqual(warnings, [],
         "Initialization, opening databases and native functions do not warn");
       assert.deepEqual(db.exec(`SELECT log(100), sqrt('abc'),
-        sign('abc'), typeof(sign(2.5)), reverse('abc')`)[0].values,
-      [[Math.log(100), 0, 0, "real", "cba"]]);
-      assert.equal(warnings.length, 5, "Each legacy scalar call warns");
+        sign('abc'), typeof(sign(2.5)), reverse('abc'), square(3)`)[0].values,
+      [[2, null, null, "integer", "cba", 9]],
+      "SQLite's built-ins win over legacy functions of the same name");
+      assert.equal(warnings.length, 2, "Each legacy-only scalar call warns");
       assert.ok(warnings.every(message =>
         message.includes("deprecated") &&
         message.includes("next major version") &&
         message.includes("https://github.com/sql-js/sql.js/pull/647")
       ), "Usage warnings explain deprecation and link to the discussion");
-      assert.ok(warnings[0].includes("log()"), "Warnings name the function");
+      assert.ok(warnings[0].includes("reverse()"), "Warnings name the function");
+      warnings.length = 0;
+      db.run("CREATE TABLE t(a); CREATE INDEX ti ON t(floor(a));" +
+        "CREATE VIEW v AS SELECT log(a) AS l FROM t;" +
+        "INSERT INTO t VALUES (100)");
+      assert.deepEqual(db.exec("SELECT a FROM t WHERE floor(a) = 100")[0]
+        .values, [[100]], "Indexes use the deterministic built-in");
+      assert.deepEqual(db.exec("SELECT l FROM v")[0].values, [[2]],
+        "Views use the built-in");
+      assert.deepEqual(warnings, [], "Built-ins never warn");
       warnings.length = 0;
       db.exec("SELECT reverse(x) FROM (SELECT 'a' AS x UNION ALL SELECT 'b')");
       assert.equal(warnings.length, 2, "Legacy calls on separate rows each warn");
