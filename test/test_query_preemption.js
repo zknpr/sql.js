@@ -112,20 +112,19 @@ exports.test = function testQueryPreemption(SQL, assert) {
         "closing a database releases its progress-handler table slot");
     SQL.removeFunction(slotAfterClose);
 
-    // export() replaces the SQLite handle, so it owns the same cleanup duty.
+    // export() keeps the SQLite handle open, so the progress handler stays
+    // registered and keeps firing until close() clears it.
     var exportDb = new SQL.Database();
-    exportDb.progress_handler(1, tableFunction);
-    adjacentSlot = SQL.addFunction(tableFunction, "ii");
-    SQL.removeFunction(adjacentSlot);
-    exportDb.progress_handler(1, null);
-    progressHandlerSlot = SQL.addFunction(tableFunction, "ii");
-    SQL.removeFunction(progressHandlerSlot);
-    exportDb.progress_handler(1, tableFunction);
+    var exportProgressCalls = 0;
+    exportDb.progress_handler(1, function countExportProgress() {
+        exportProgressCalls += 1;
+        return 0;
+    });
     exportDb.export();
-    var slotAfterExport = SQL.addFunction(tableFunction, "ii");
-    assert.equal(slotAfterExport, progressHandlerSlot,
-        "exporting a database releases its progress-handler table slot");
-    SQL.removeFunction(slotAfterExport);
+    exportProgressCalls = 0;
+    exportDb.exec("SELECT 1");
+    assert.ok(exportProgressCalls > 0,
+        "the progress handler stays active after export");
     exportDb.close();
 };
 
