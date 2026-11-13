@@ -88,34 +88,41 @@ exports.test = function testQueryPreemption(SQL, assert) {
     db.progress_handler(1, null);
     db.close();
 
+    // Return the slot the next addFunction takes from Emscripten's free list
+    // (last in, first out), leaving it free. Each probe is a new function:
+    // addFunction returns the remembered index of a function it has added
+    // before, even after removeFunction and even when another function now
+    // holds that index, so reusing one probe function always "finds" the
+    // same slot and would let a leaked slot pass.
+    function probeSlot() {
+        var slot = SQL.addFunction(function probe() { return 0; }, "ii");
+        SQL.removeFunction(slot);
+        return slot;
+    }
+
     // Keep a known adjacent free slot. A leaking re-registration consumes it;
     // a correct one reuses its own slot and leaves the marker available.
     var lifecycleDb = new SQL.Database();
     lifecycleDb.progress_handler(1, tableFunction);
-    var adjacentSlot = SQL.addFunction(tableFunction, "ii");
-    SQL.removeFunction(adjacentSlot);
+    var adjacentSlot = probeSlot();
     lifecycleDb.progress_handler(1, tableFunction);
-    var reusedAdjacentSlot = SQL.addFunction(tableFunction, "ii");
-    assert.equal(reusedAdjacentSlot, adjacentSlot,
+    assert.equal(probeSlot(), adjacentSlot,
         "re-registering a progress handler releases its old table slot");
-    SQL.removeFunction(reusedAdjacentSlot);
 
     // Identify the handler's slot, register into it again, then prove close()
     // returned that exact slot to Emscripten's free list.
     lifecycleDb.progress_handler(1, null);
-    var progressHandlerSlot = SQL.addFunction(tableFunction, "ii");
-    SQL.removeFunction(progressHandlerSlot);
+    var progressHandlerSlot = probeSlot();
     lifecycleDb.progress_handler(1, tableFunction);
     lifecycleDb.close();
-    var slotAfterClose = SQL.addFunction(tableFunction, "ii");
-    assert.equal(slotAfterClose, progressHandlerSlot,
+    assert.equal(probeSlot(), progressHandlerSlot,
         "closing a database releases its progress-handler table slot");
-    SQL.removeFunction(slotAfterClose);
 
     // export() keeps the SQLite handle open, so the progress handler stays
-    // registered and keeps firing until close() clears it.
+    // registered, keeps firing and keeps its slot until close() clears it.
     var exportDb = new SQL.Database();
     var exportProgressCalls = 0;
+    var exportHandlerSlot = probeSlot();
     exportDb.progress_handler(1, function countExportProgress() {
         exportProgressCalls += 1;
         return 0;
@@ -125,7 +132,11 @@ exports.test = function testQueryPreemption(SQL, assert) {
     exportDb.exec("SELECT 1");
     assert.ok(exportProgressCalls > 0,
         "the progress handler stays active after export");
+    assert.notEqual(probeSlot(), exportHandlerSlot,
+        "export keeps the progress handler's table slot");
     exportDb.close();
+    assert.equal(probeSlot(), exportHandlerSlot,
+        "closing an exported database releases its progress-handler table slot");
 };
 
 if (module === require.main) {
