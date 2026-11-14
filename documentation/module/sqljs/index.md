@@ -6,7 +6,7 @@ longname: module:SqlJs
 
 # SqlJs
 
-<SourceLink href="/source/api-js/#L59" label="api.js:59" />
+<SourceLink href="/source/api-js/#L60" label="api.js:60" />
 
 ---
 
@@ -14,7 +14,7 @@ longname: module:SqlJs
 
 <MemberHeading id="statement" depth="3" name="Statement" sig="Statement" />
 
-<MemberMeta sourceHref="/source/api-js/#L364" sourceLabel="api.js:364" />
+<MemberMeta sourceHref="/source/api-js/#L365" sourceLabel="api.js:365" />
 
 Represents a prepared statement. Prepared statements allow you to have a template sql string, that you can execute multiple times with different parameters.
 
@@ -40,7 +40,7 @@ Statements can't be created by the API user directly, only by Database::prepare
 
 <MemberHeading id="statementiterator" depth="3" name="StatementIterator" sig="StatementIterator" />
 
-<MemberMeta sourceHref="/source/api-js/#L836" sourceLabel="api.js:836" />
+<MemberMeta sourceHref="/source/api-js/#L837" sourceLabel="api.js:837" />
 
 **Implements:&#x20;**`Iterator<Statement>`, `Iterable<Statement>`
 

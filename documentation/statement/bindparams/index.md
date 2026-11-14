@@ -6,7 +6,7 @@ longname: Statement.BindParams
 
 # BindParams
 
-<SourceLink href="/source/api-js/#L384" label="api.js:384" />
+<SourceLink href="/source/api-js/#L385" label="api.js:385" />
 
 **Type**
 

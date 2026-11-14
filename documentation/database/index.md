@@ -7,7 +7,7 @@ description: Represents an SQLite database
 
 # Database
 
-<SourceLink href="/source/api-js/#L949" label="api.js:949" />
+<SourceLink href="/source/api-js/#L950" label="api.js:950" />
 
 Represents an SQLite database
 
@@ -29,7 +29,7 @@ Represents an SQLite database
 
 <MemberHeading id="run" depth="3" name="run" sig="run(sql: string, params?: Statement.BindParams): Database" />
 
-<MemberMeta sourceHref="/source/api-js/#L981" sourceLabel="api.js:981" />
+<MemberMeta sourceHref="/source/api-js/#L982" sourceLabel="api.js:982" />
 
 Execute an SQL query, ignoring the rows it returns.
 
@@ -62,7 +62,7 @@ Execute an SQL query, ignoring the rows it returns.
 ): Array.<Database.QueryExecResult>"
 />
 
-<MemberMeta sourceHref="/source/api-js/#L1071" sourceLabel="api.js:1071" />
+<MemberMeta sourceHref="/source/api-js/#L1072" sourceLabel="api.js:1072" />
 
 Execute an SQL query, and returns the result.
 
@@ -127,7 +127,7 @@ var res = db.exec(
 ): Database"
 />
 
-<MemberMeta sourceHref="/source/api-js/#L1148" sourceLabel="api.js:1148" />
+<MemberMeta sourceHref="/source/api-js/#L1149" sourceLabel="api.js:1149" />
 
 Execute an sql statement, and call a callback for each row of result.
 
@@ -159,7 +159,7 @@ db.each("SELECT name,age FROM users WHERE age >= $majority", {$majority:18},
 
 <MemberHeading id="prepare" depth="3" name="prepare" sig="prepare(sql: string, params?: Statement.BindParams): Statement" />
 
-<MemberMeta sourceHref="/source/api-js/#L1176" sourceLabel="api.js:1176" />
+<MemberMeta sourceHref="/source/api-js/#L1177" sourceLabel="api.js:1177" />
 
 Prepare an SQL statement
 
@@ -178,7 +178,7 @@ Prepare an SQL statement
 
 <MemberHeading id="iteratestatements" depth="3" name="iterateStatements" sig="iterateStatements(sql: string): StatementIterator" />
 
-<MemberMeta sourceHref="/source/api-js/#L1215" sourceLabel="api.js:1215" />
+<MemberMeta sourceHref="/source/api-js/#L1216" sourceLabel="api.js:1216" />
 
 Iterate over multiple SQL statements in a SQL string. This function returns an iterator over [Statement](/module/sqljs#statement) objects. You can use a for..of loop to execute the returned statements one by one.
 
@@ -208,7 +208,7 @@ for (const statement of db.iterateStatements(sql_queries)) {
 
 <MemberHeading id="export" depth="3" name="export" sig="export(): Uint8Array" />
 
-<MemberMeta sourceHref="/source/api-js/#L1238" sourceLabel="api.js:1238" />
+<MemberMeta sourceHref="/source/api-js/#L1239" sourceLabel="api.js:1239" />
 
 Exports a snapshot of the main database to a binary array without closing the connection. Prepared statements, registered functions, update hooks and connection settings (including pragmas) are preserved. TEMP objects and attached databases remain available on this connection, but are not included in the exported file.
 
@@ -224,7 +224,7 @@ The returned array is an independent copy. It can be used to create a new Databa
 
 <MemberHeading id="close" depth="3" name="close" sig="close()" />
 
-<MemberMeta sourceHref="/source/api-js/#L1331" sourceLabel="api.js:1331" />
+<MemberMeta sourceHref="/source/api-js/#L1332" sourceLabel="api.js:1332" />
 
 Close the database, and all associated prepared statements. The memory associated to the database and all associated statements will be freed.
 
@@ -234,13 +234,13 @@ Databases **must** be closed when you're finished with them, or the memory consu
 
 <MemberHeading id="handleerror" depth="3" name="handleError" sig="handleError()" />
 
-<MemberMeta sourceHref="/source/api-js/#L1362" sourceLabel="api.js:1362" />
+<MemberMeta sourceHref="/source/api-js/#L1363" sourceLabel="api.js:1363" />
 
 Analyze a result code, return null if no error occured, and throw an error with a descriptive message otherwise
 
 <MemberHeading id="getrowsmodified" depth="3" name="getRowsModified" sig="getRowsModified(): number" />
 
-<MemberMeta sourceHref="/source/api-js/#L1378" sourceLabel="api.js:1378" />
+<MemberMeta sourceHref="/source/api-js/#L1379" sourceLabel="api.js:1379" />
 
 Returns the number of changed rows (modified, inserted or deleted) by the latest completed INSERT, UPDATE or DELETE statement on the database. Executing any other type of SQL statement does not modify the value returned by this function.
 
@@ -258,7 +258,7 @@ Returns the number of changed rows (modified, inserted or deleted) by the latest
 ): Database"
 />
 
-<MemberMeta sourceHref="/source/api-js/#L1393" sourceLabel="api.js:1393" />
+<MemberMeta sourceHref="/source/api-js/#L1394" sourceLabel="api.js:1394" />
 
 Register a callback that SQLite calls periodically while executing statements. Returning a truthy value from the callback interrupts the current statement. Passing a null or omitted callback clears the handler. A callback that throws also interrupts the statement.
 
@@ -273,7 +273,7 @@ Register a callback that SQLite calls periodically while executing statements. R
 
 <MemberHeading id="interrupt" depth="3" name="interrupt" sig="interrupt(): Database" />
 
-<MemberMeta sourceHref="/source/api-js/#L1439" sourceLabel="api.js:1439" />
+<MemberMeta sourceHref="/source/api-js/#L1440" sourceLabel="api.js:1440" />
 
 Interrupt a currently executing statement on this database.
 
@@ -283,7 +283,7 @@ Interrupt a currently executing statement on this database.
 
 <MemberHeading id="createfunction" depth="3" name="create_function" sig="create_function(name: string, func: function): Database" />
 
-<MemberMeta sourceHref="/source/api-js/#L1542" sourceLabel="api.js:1542" />
+<MemberMeta sourceHref="/source/api-js/#L1543" sourceLabel="api.js:1543" />
 
 Register a custom function with SQLite
 
@@ -315,7 +315,7 @@ db.create_function("addOne", function (x) {return x+1;})
 ): Database"
 />
 
-<MemberMeta sourceHref="/source/api-js/#L1609" sourceLabel="api.js:1609" />
+<MemberMeta sourceHref="/source/api-js/#L1610" sourceLabel="api.js:1610" />
 
 Register a custom aggregate with SQLite
 
@@ -353,7 +353,7 @@ db.create_aggregate("js_sum", {
 ): Database"
 />
 
-<MemberMeta sourceHref="/source/api-js/#L1776" sourceLabel="api.js:1776" />
+<MemberMeta sourceHref="/source/api-js/#L1777" sourceLabel="api.js:1777" />
 
 Registers an update hook with SQLite.
 
@@ -421,7 +421,7 @@ db.run("INSERT INTO users VALUES (2, 'Bob', 1)");
 
 <MemberHeading id="openpaged" depth="3" name="&#x22;openPaged&#x22;]" sig="'openPaged'](hostIo: Object): Database" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L2440" sourceLabel="api.js:2440" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L2441" sourceLabel="api.js:2441" />
 
 Open a read-only database served page-by-page by the host, without copying it into the WASM heap.
 
@@ -457,7 +457,7 @@ var db = SQL.Database.openPaged({
 
 <MemberHeading id="openpagedwritable" depth="3" name="&#x22;openPagedWritable&#x22;]" sig="'openPagedWritable'](hostIo: Object): Database" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L2559" sourceLabel="api.js:2559" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L2560" sourceLabel="api.js:2560" />
 
 Open a host-served database copy-on-write, without copying it into the WASM heap and without ever modifying the host file.
 
@@ -511,11 +511,11 @@ var db = SQL.Database.openPagedWritable({
 
 <MemberHeading id="sqlvalue" depth="3" name="SqlValue" sig="SqlValue: string | number | null | Uint8Array" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L379" sourceLabel="api.js:379" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L380" sourceLabel="api.js:380" />
 
 <MemberHeading id="queryexecresult" depth="3" name="QueryExecResult" sig="QueryExecResult: Object" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L1016" sourceLabel="api.js:1016" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L1017" sourceLabel="api.js:1017" />
 
 **Properties**
 
@@ -524,7 +524,7 @@ var db = SQL.Database.openPagedWritable({
 
 <MemberHeading id="updatehookcallback" depth="3" name="UpdateHookCallback" sig="UpdateHookCallback: function" />
 
-<MemberMeta sourceHref="/source/api-js/#L1848" sourceLabel="api.js:1848" />
+<MemberMeta sourceHref="/source/api-js/#L1849" sourceLabel="api.js:1849" />
 
 **Parameters**
 
@@ -535,7 +535,7 @@ var db = SQL.Database.openPagedWritable({
 
 <MemberHeading id="pagedwritableoverlaychunk" depth="3" name="PagedWritableOverlayChunk" sig="PagedWritableOverlayChunk: Object" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L2311" sourceLabel="api.js:2311" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L2312" sourceLabel="api.js:2312" />
 
 **Properties**
 
@@ -544,7 +544,7 @@ var db = SQL.Database.openPagedWritable({
 
 <MemberHeading id="pagedwritableoverlay" depth="3" name="PagedWritableOverlay" sig="PagedWritableOverlay: Object" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L2320" sourceLabel="api.js:2320" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L2321" sourceLabel="api.js:2321" />
 
 **Properties**
 

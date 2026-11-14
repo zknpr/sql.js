@@ -6,7 +6,7 @@ longname: StatementIterator.StatementIteratorResult
 
 # StatementIteratorResult
 
-<SourceLink href="/source/api-js/#L856" label="api.js:856" />
+<SourceLink href="/source/api-js/#L857" label="api.js:857" />
 
 **Properties**
 

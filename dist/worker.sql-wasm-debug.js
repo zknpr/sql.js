@@ -182,6 +182,7 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
  * a function that returns the full path to a resource given its file name
  * @property {boolean} [useOldExtensionFunctions=true]
  * Register deprecated extension functions for backwards compatibility.
+ * SQLite's built-ins keep the names and argument counts they define.
  * Calling a legacy function prints a deprecation warning.
  * Set to false to use SQLite's native functions without legacy overrides.
  * The first initialization determines this option for all databases.

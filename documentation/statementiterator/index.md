@@ -9,7 +9,7 @@ description: An iterator over multiple SQL statements in a string, preparing and
 
 **Implements:&#x20;**`Iterator<Statement>`, `Iterable<Statement>`
 
-<SourceLink href="/source/api-js/#L836" label="api.js:836" />
+<SourceLink href="/source/api-js/#L837" label="api.js:837" />
 
 An iterator over multiple SQL statements in a string, preparing and returning a Statement object for the next SQL statement on each iteration.
 
@@ -67,7 +67,7 @@ try {
 
 <MemberHeading id="next" depth="3" name="next" sig="next(): StatementIterator.StatementIteratorResult" />
 
-<MemberMeta sourceHref="/source/api-js/#L860" sourceLabel="api.js:860" />
+<MemberMeta sourceHref="/source/api-js/#L861" sourceLabel="api.js:861" />
 
 Prepare the next available SQL statement
 
@@ -81,7 +81,7 @@ Prepare the next available SQL statement
 
 <MemberHeading id="return" depth="3" name="[&#x22;return&#x22;]" sig="['return'](): StatementIterator.StatementIteratorResult" />
 
-<MemberMeta sourceHref="/source/api-js/#L913" sourceLabel="api.js:913" />
+<MemberMeta sourceHref="/source/api-js/#L914" sourceLabel="api.js:914" />
 
 Free the resources held by this iterator, in case it will not be run to completion. This is called automatically when a for..of loop exits early (e.g. via break, return, or an exception), and can also be called manually.
 
@@ -91,7 +91,7 @@ Free the resources held by this iterator, in case it will not be run to completi
 
 <MemberHeading id="getremainingsql" depth="3" name="getRemainingSQL" sig="getRemainingSQL(): String" />
 
-<MemberMeta sourceHref="/source/api-js/#L925" sourceLabel="api.js:925" />
+<MemberMeta sourceHref="/source/api-js/#L926" sourceLabel="api.js:926" />
 
 Get any un-executed portions remaining of the original SQL string
 
@@ -103,7 +103,7 @@ Get any un-executed portions remaining of the original SQL string
 
 <MemberHeading id="statementiteratorresult" depth="3" name="StatementIteratorResult" sig="StatementIteratorResult: Object | Object" />
 
-<MemberMeta badges="static" sourceHref="/source/api-js/#L856" sourceLabel="api.js:856" />
+<MemberMeta badges="static" sourceHref="/source/api-js/#L857" sourceLabel="api.js:857" />
 
 **Properties**
 
