@@ -41,17 +41,27 @@ static void legacyFinal(sqlite3_context *context) {
  * would replace SQLite's own (log, ceil, sign and the other math functions)
  * in queries, indexes and views. narg -1 accepts any count, -3 one or more
  * and -4 two or more. If the list cannot be read, the legacy function is
- * registered as before. */
+ * registered as before.
+ *
+ * This reads PRAGMA function_list, which does not load the schema, and not
+ * the pragma_function_list table: naming a table loads the schema, and SQLite
+ * ignores unknown functions while it does, so a schema with an index or a
+ * generated column on a legacy function would load before that function
+ * exists and escape the check that refuses non-deterministic functions. */
 static int builtinAccepts(sqlite3 *db, const char *name, int argc) {
   sqlite3_stmt *statement = 0;
   int accepts = 0;
-  if (sqlite3_prepare_v2(db,
-      "SELECT 1 FROM pragma_function_list WHERE builtin AND name = ?1 "
-      "AND (narg = ?2 OR narg = -1 OR (narg = -3 AND ?2 >= 1) "
-      "OR (narg = -4 AND ?2 >= 2))", -1, &statement, 0) == SQLITE_OK) {
-    sqlite3_bind_text(statement, 1, name, -1, SQLITE_STATIC);
-    sqlite3_bind_int(statement, 2, argc);
-    accepts = sqlite3_step(statement) == SQLITE_ROW;
+  if (sqlite3_prepare_v2(db, "PRAGMA function_list", -1, &statement,
+                         0) == SQLITE_OK) {
+    /* Columns: name, builtin, type, enc, narg, flags. */
+    while (!accepts && sqlite3_step(statement) == SQLITE_ROW) {
+      const char *builtinName = (const char *)sqlite3_column_text(statement, 0);
+      int narg = sqlite3_column_int(statement, 4);
+      accepts = sqlite3_column_int(statement, 1) && builtinName &&
+        sqlite3_stricmp(builtinName, name) == 0 &&
+        (narg == argc || narg == -1 || (narg == -3 && argc >= 1) ||
+         (narg == -4 && argc >= 2));
+    }
   }
   sqlite3_finalize(statement);
   return accepts;
